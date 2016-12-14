@@ -22,13 +22,11 @@
 
 #include <string>
 #include <vector>
-#include <stdint.h>
 
 class CEdl
 {
 public:
   CEdl();
-  virtual ~CEdl(void);
 
   typedef enum
   {
@@ -56,6 +54,7 @@ public:
   int RestoreCutTime(int iClock) const;
 
   bool InCut(int iSeek, Cut *pCut = NULL) const;
+  bool GetNearestCut(bool bPlus, const int iSeek, Cut *pCut) const;
 
   bool GetNextSceneMarker(bool bPlus, const int iClock, int *iSceneMarker) const;
 

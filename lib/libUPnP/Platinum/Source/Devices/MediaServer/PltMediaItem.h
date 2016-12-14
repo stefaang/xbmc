@@ -165,9 +165,10 @@ public:
 };
 
 typedef struct {
+  NPT_String last_playerstate;
   NPT_String date_added;
   NPT_Float rating;
-  NPT_String votes;
+  NPT_Int32 votes;
   PLT_Artworks artwork;
   NPT_String unique_identifier;
   NPT_List<NPT_String> countries;

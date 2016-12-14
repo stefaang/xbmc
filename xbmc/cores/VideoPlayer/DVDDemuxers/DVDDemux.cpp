@@ -20,19 +20,9 @@
 
 #include "DVDDemux.h"
 
-void CDemuxStreamTeletext::GetStreamInfo(std::string& strInfo)
+std::string CDemuxStreamAudio::GetStreamType()
 {
-  strInfo = "Teletext Data Stream";
-}
-
-void CDemuxStreamRadioRDS::GetStreamInfo(std::string& strInfo)
-{
-  strInfo = "Radio Data Stream (RDS)";
-}
-
-void CDemuxStreamAudio::GetStreamType(std::string& strInfo)
-{
-  char sInfo[64];
+  char sInfo[64] = {0};
 
   if (codec == AV_CODEC_ID_AC3) strcpy(sInfo, "AC3 ");
   else if (codec == AV_CODEC_ID_DTS)
@@ -60,30 +50,16 @@ void CDemuxStreamAudio::GetStreamType(std::string& strInfo)
     sprintf(temp, " %d%s", iChannels, "-chs");
     strcat(sInfo, temp);
   }
-  strInfo = sInfo;
+  return sInfo;
 }
 
-int CDVDDemux::GetNrOfAudioStreams()
+int CDVDDemux::GetNrOfStreams(StreamType streamType)
 {
   int iCounter = 0;
 
-  for (int i = 0; i < GetNrOfStreams(); i++)
+  for (auto pStream : GetStreams())
   {
-    CDemuxStream* pStream = GetStream(i);
-    if (pStream->type == STREAM_AUDIO) iCounter++;
-  }
-
-  return iCounter;
-}
-
-int CDVDDemux::GetNrOfVideoStreams()
-{
-  int iCounter = 0;
-
-  for (int i = 0; i < GetNrOfStreams(); i++)
-  {
-    CDemuxStream* pStream = GetStream(i);
-    if (pStream->type == STREAM_VIDEO) iCounter++;
+    if (pStream && pStream->type == streamType) iCounter++;
   }
 
   return iCounter;
@@ -91,125 +67,10 @@ int CDVDDemux::GetNrOfVideoStreams()
 
 int CDVDDemux::GetNrOfSubtitleStreams()
 {
-  int iCounter = 0;
-
-  for (int i = 0; i < GetNrOfStreams(); i++)
-  {
-    CDemuxStream* pStream = GetStream(i);
-    if (pStream->type == STREAM_SUBTITLE) iCounter++;
-  }
-
-  return iCounter;
+  return GetNrOfStreams(STREAM_SUBTITLE);
 }
 
-int CDVDDemux::GetNrOfTeletextStreams()
+std::string CDemuxStream::GetStreamName()
 {
-  int iCounter = 0;
-
-  for (int i = 0; i < GetNrOfStreams(); i++)
-  {
-    CDemuxStream* pStream = GetStream(i);
-    if (pStream->type == STREAM_TELETEXT) iCounter++;
-  }
-
-  return iCounter;
+  return "";
 }
-
-const int CDVDDemux::GetNrOfRadioRDSStreams()
-{
-  int iCounter = 0;
-
-  for (int i = 0; i < GetNrOfStreams(); i++)
-  {
-    CDemuxStream* pStream = GetStream(i);
-    if (pStream->type == STREAM_RADIO_RDS) iCounter++;
-  }
-
-  return iCounter;
-}
-
-CDemuxStreamAudio* CDVDDemux::GetStreamFromAudioId(int iAudioIndex)
-{
-  int counter = -1;
-  for (int i = 0; i < GetNrOfStreams(); i++)
-  {
-    CDemuxStream* pStream = GetStream(i);
-
-    if (pStream->type == STREAM_AUDIO) counter++;
-    if (iAudioIndex == counter)
-      return (CDemuxStreamAudio*)pStream;
-  }
-  return NULL;
-}
-
-CDemuxStreamVideo* CDVDDemux::GetStreamFromVideoId(int iVideoIndex)
-{
-  int counter = -1;
-  for (int i = 0; i < GetNrOfStreams(); i++)
-  {
-    CDemuxStream* pStream = GetStream(i);
-
-    if (pStream->type == STREAM_VIDEO) counter++;
-    if (iVideoIndex == counter)
-      return (CDemuxStreamVideo*)pStream;
-  }
-  return NULL;
-}
-
-CDemuxStreamSubtitle* CDVDDemux::GetStreamFromSubtitleId(int iSubtitleIndex)
-{
-  int counter = -1;
-  for (int i = 0; i < GetNrOfStreams(); i++)
-  {
-    CDemuxStream* pStream = GetStream(i);
-
-    if (pStream->type == STREAM_SUBTITLE) counter++;
-    if (iSubtitleIndex == counter)
-      return (CDemuxStreamSubtitle*)pStream;
-  }
-  return NULL;
-}
-
-CDemuxStreamTeletext* CDVDDemux::GetStreamFromTeletextId(int iTeletextIndex)
-{
-  int counter = -1;
-  for (int i = 0; i < GetNrOfStreams(); i++)
-  {
-    CDemuxStream* pStream = GetStream(i);
-
-    if (pStream->type == STREAM_TELETEXT) counter++;
-    if (iTeletextIndex == counter)
-      return (CDemuxStreamTeletext*)pStream;
-  }
-  return NULL;
-}
-
-const CDemuxStreamRadioRDS* CDVDDemux::GetStreamFromRadioRDSId(int iRadioRDSIndex)
-{
-  int counter = -1;
-  for (int i = 0; i < GetNrOfStreams(); i++)
-  {
-    CDemuxStream* pStream = GetStream(i);
-
-    if (pStream->type == STREAM_RADIO_RDS) counter++;
-    if (iRadioRDSIndex == counter)
-      return (CDemuxStreamRadioRDS*)pStream;
-  }
-  return NULL;
-}
-
-void CDemuxStream::GetStreamName( std::string& strInfo )
-{
-  strInfo = "";
-}
-
-AVDiscard CDemuxStream::GetDiscard()
-{
-  return AVDISCARD_NONE;
-}
-
-void CDemuxStream::SetDiscard(AVDiscard discard)
-{
-  return;
-}
-

@@ -28,32 +28,27 @@
 namespace ADDON
 {
 
-CPluginSource::CPluginSource(const AddonProps &props)
-  : CAddon(props)
+std::unique_ptr<CPluginSource> CPluginSource::FromExtension(AddonProps props, const cp_extension_t* ext)
+{
+  std::string provides = CAddonMgr::GetInstance().GetExtValue(ext->configuration, "provides");
+  if (!provides.empty())
+    props.extrainfo.insert(make_pair("provides", provides));
+  return std::unique_ptr<CPluginSource>(new CPluginSource(std::move(props), provides));
+}
+
+CPluginSource::CPluginSource(AddonProps props) : CAddon(std::move(props))
 {
   std::string provides;
-  InfoMap::const_iterator i = Props().extrainfo.find("provides");
-  if (i != Props().extrainfo.end())
+  InfoMap::const_iterator i = m_props.extrainfo.find("provides");
+  if (i != m_props.extrainfo.end())
     provides = i->second;
   SetProvides(provides);
 }
 
-CPluginSource::CPluginSource(const cp_extension_t *ext)
-  : CAddon(ext)
+CPluginSource::CPluginSource(AddonProps props, const std::string& provides)
+  : CAddon(std::move(props))
 {
-  std::string provides;
-  if (ext)
-  {
-    provides = CAddonMgr::GetInstance().GetExtValue(ext->configuration, "provides");
-    if (!provides.empty())
-      Props().extrainfo.insert(make_pair("provides", provides));
-  }
   SetProvides(provides);
-}
-
-AddonPtr CPluginSource::Clone() const
-{
-  return AddonPtr(new CPluginSource(*this));
 }
 
 void CPluginSource::SetProvides(const std::string &content)
@@ -82,6 +77,8 @@ CPluginSource::Content CPluginSource::Translate(const std::string &content)
     return CPluginSource::EXECUTABLE;
   else if (content == "video")
     return CPluginSource::VIDEO;
+  else if (content == "game")
+    return CPluginSource::GAME;
   else
     return CPluginSource::UNKNOWN;
 }
@@ -94,6 +91,8 @@ TYPE CPluginSource::FullType() const
     return ADDON_AUDIO;
   if (Provides(IMAGE))
     return ADDON_IMAGE;
+  if (Provides(GAME))
+    return ADDON_GAME;
   if (Provides(EXECUTABLE))
     return ADDON_EXECUTABLE;
 
@@ -105,6 +104,7 @@ bool CPluginSource::IsType(TYPE type) const
   return ((type == ADDON_VIDEO && Provides(VIDEO))
        || (type == ADDON_AUDIO && Provides(AUDIO))
        || (type == ADDON_IMAGE && Provides(IMAGE))
+       || (type == ADDON_GAME && Provides(GAME))
        || (type == ADDON_EXECUTABLE && Provides(EXECUTABLE)));
 }
 

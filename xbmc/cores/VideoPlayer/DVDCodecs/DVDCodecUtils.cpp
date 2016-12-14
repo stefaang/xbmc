@@ -48,11 +48,11 @@ DVDVideoPicture* CDVDCodecUtils::AllocatePicture(int iWidth, int iHeight)
     pPicture->iWidth = iWidth;
     pPicture->iHeight = iHeight;
 
-    int w = iWidth / 2;
-    int h = iHeight / 2;
+    int w = (iWidth + 1) / 2;
+    int h = (iHeight + 1) / 2;
     int size = w * h;
     int totalsize = (iWidth * iHeight) + size * 2;
-    uint8_t* data = new uint8_t[totalsize];
+    uint8_t* data = static_cast<uint8_t*>(av_malloc(totalsize));
     if (data)
     {
       pPicture->data[0] = data;
@@ -76,7 +76,7 @@ DVDVideoPicture* CDVDCodecUtils::AllocatePicture(int iWidth, int iHeight)
 
 void CDVDCodecUtils::FreePicture(DVDVideoPicture* pPicture)
 {
-  delete[] pPicture->data[0];
+  av_free(pPicture->data[0]);
   delete pPicture;
 }
 
@@ -185,7 +185,7 @@ DVDVideoPicture* CDVDCodecUtils::ConvertToNV12Picture(DVDVideoPicture *pSrc)
     int h = pPicture->iHeight / 2;
     int size = w * h;
     int totalsize = (pPicture->iWidth * pPicture->iHeight) + size * 2;
-    uint8_t* data = new uint8_t[totalsize];
+    uint8_t* data = (uint8_t*) av_malloc(totalsize);
     if (data)
     {
       pPicture->data[0] = data;
@@ -239,7 +239,7 @@ DVDVideoPicture* CDVDCodecUtils::ConvertToYUV422PackedPicture(DVDVideoPicture *p
     *pPicture = *pSrc;
 
     int totalsize = pPicture->iWidth * pPicture->iHeight * 2;
-    uint8_t* data = new uint8_t[totalsize];
+    uint8_t* data = (uint8_t*) av_malloc(totalsize);
 
     if (data)
     {
@@ -415,7 +415,7 @@ static const EFormatMap g_format_map[] = {
 ,  { AV_PIX_FMT_UYVY422,     RENDER_FMT_UYVY422    }
 ,  { AV_PIX_FMT_YUYV422,     RENDER_FMT_YUYV422    }
 ,  { AV_PIX_FMT_VAAPI_VLD,   RENDER_FMT_VAAPI      }
-,  { AV_PIX_FMT_DXVA2_VLD,   RENDER_FMT_DXVA       }
+,  { AV_PIX_FMT_D3D11VA_VLD, RENDER_FMT_DXVA       }
 ,  { AV_PIX_FMT_NONE     ,   RENDER_FMT_NONE       }
 };
 
@@ -429,7 +429,7 @@ ERenderFormat CDVDCodecUtils::EFormatFromPixfmt(int fmt)
   return RENDER_FMT_NONE;
 }
 
-int CDVDCodecUtils::PixfmtFromEFormat(ERenderFormat fmt)
+AVPixelFormat CDVDCodecUtils::PixfmtFromEFormat(ERenderFormat fmt)
 {
   for(const EFormatMap *p = g_format_map; p->pix_fmt != AV_PIX_FMT_NONE; ++p)
   {

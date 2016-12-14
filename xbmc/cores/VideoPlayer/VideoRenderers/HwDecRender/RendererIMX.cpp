@@ -23,31 +23,32 @@
 #if defined(HAS_IMXVPU)
 #include "cores/IPlayer.h"
 #include "windowing/egl/EGLWrapper.h"
-#include "DVDCodecs/Video/DVDVideoCodecIMX.h"
 #include "utils/log.h"
 #include "utils/GLUtils.h"
 #include "settings/MediaSettings.h"
 #include "windowing/WindowingFactory.h"
-#include "osx/DarwinUtils.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderCapture.h"
+#include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
+
+#define RENDER_FLAG_FIELDS (RENDER_FLAG_FIELD0 | RENDER_FLAG_FIELD1)
 
 CRendererIMX::CRendererIMX()
 {
-
+  m_bufHistory.clear();
+  g_IMXContext.Clear();
 }
 
 CRendererIMX::~CRendererIMX()
 {
-
+  UnInit();
+  std::for_each(m_bufHistory.begin(), m_bufHistory.end(), Release);
+  g_IMXContext.Clear();
+  g_IMX.Deinitialize();
 }
 
 bool CRendererIMX::RenderCapture(CRenderCapture* capture)
 {
-  CRect rect(0, 0, capture->GetWidth(), capture->GetHeight());
-
-  CDVDVideoCodecIMXBuffer *buffer = static_cast<CDVDVideoCodecIMXBuffer*>(m_buffers[m_iYV12RenderBuffer].hwDec);
   capture->BeginRender();
-  g_IMXContext.PushCaptureTask(buffer, &rect);
   capture->EndRender();
   return true;
 }
@@ -55,7 +56,6 @@ bool CRendererIMX::RenderCapture(CRenderCapture* capture)
 void CRendererIMX::AddVideoPictureHW(DVDVideoPicture &picture, int index)
 {
   YUVBUFFER &buf = m_buffers[index];
-  CDVDVideoCodecIMXBuffer *buffer = static_cast<CDVDVideoCodecIMXBuffer*>(buf.hwDec);
 
   buf.hwDec = picture.IMXBuffer;
 
@@ -85,26 +85,32 @@ bool CRendererIMX::Supports(EINTERLACEMETHOD method)
   if(method == VS_INTERLACEMETHOD_AUTO)
     return true;
 
-  if(method == VS_INTERLACEMETHOD_IMX_FASTMOTION
-  || method == VS_INTERLACEMETHOD_IMX_FASTMOTION_DOUBLE)
+  if(method == VS_INTERLACEMETHOD_IMX_ADVMOTION
+  || method == VS_INTERLACEMETHOD_IMX_ADVMOTION_HALF
+  || method == VS_INTERLACEMETHOD_IMX_FASTMOTION
+  || method == VS_INTERLACEMETHOD_RENDER_BOB)
     return true;
   else
     return false;
 }
 
-bool CRendererIMX::Supports(EDEINTERLACEMODE mode)
-{
-  return false;
-}
-
 bool CRendererIMX::Supports(ESCALINGMETHOD method)
 {
-  return false;
+  return method == VS_SCALINGMETHOD_AUTO;
 }
 
 EINTERLACEMETHOD CRendererIMX::AutoInterlaceMethod()
 {
-  return VS_INTERLACEMETHOD_IMX_FASTMOTION;
+  return VS_INTERLACEMETHOD_IMX_ADVMOTION_HALF;
+}
+
+bool CRendererIMX::WantsDoublePass()
+{
+  if (CMediaSettings::GetInstance().GetCurrentVideoSettings().m_InterlaceMethod ==
+      VS_INTERLACEMETHOD_IMX_ADVMOTION)
+    return true;
+  else
+    return false;
 }
 
 CRenderInfo CRendererIMX::GetRenderInfo()
@@ -121,8 +127,8 @@ bool CRendererIMX::LoadShadersHook()
 {
   CLog::Log(LOGNOTICE, "GL: Using IMXMAP render method");
   m_textureTarget = GL_TEXTURE_2D;
-  m_renderMethod = RENDER_FMT_IMXMAP;
-  return false;
+  m_renderMethod = RENDER_IMXMAP;
+  return true;
 }
 
 bool CRendererIMX::RenderHook(int index)
@@ -139,14 +145,25 @@ bool CRendererIMX::RenderUpdateVideoHook(bool clear, DWORD flags, DWORD alpha)
   previous = current;
 #endif
   CDVDVideoCodecIMXBuffer *buffer = static_cast<CDVDVideoCodecIMXBuffer*>(m_buffers[m_iYV12RenderBuffer].hwDec);
-  if (buffer != NULL && buffer->IsValid())
+  if (buffer)
   {
+    if (!m_bufHistory.empty() && m_bufHistory.back() != buffer || m_bufHistory.empty())
+    {
+      buffer->Lock();
+      m_bufHistory.push_back(buffer);
+    }
+    if (m_bufHistory.size() > 2)
+    {
+      m_bufHistory.front()->Release();
+      m_bufHistory.pop_front();
+    }
+
     // this hack is needed to get the 2D mode of a 3D movie going
     RENDER_STEREO_MODE stereo_mode = g_graphicsContext.GetStereoMode();
     if (stereo_mode)
       g_graphicsContext.SetStereoView(RENDER_STEREO_VIEW_LEFT);
 
-    ManageDisplay();
+    ManageRenderArea();
 
     if (stereo_mode)
       g_graphicsContext.SetStereoView(RENDER_STEREO_VIEW_OFF);
@@ -172,41 +189,26 @@ bool CRendererIMX::RenderUpdateVideoHook(bool clear, DWORD flags, DWORD alpha)
     //CLog::Log(LOGDEBUG, "BLIT RECTS: source x1 %f x2 %f y1 %f y2 %f dest x1 %f x2 %f y1 %f y2 %f", srcRect.x1, srcRect.x2, srcRect.y1, srcRect.y2, dstRect.x1, dstRect.x2, dstRect.y1, dstRect.y2);
     g_IMXContext.SetBlitRects(srcRect, dstRect);
 
-    bool topFieldFirst = true;
+    uint8_t fieldFmt = flags & RENDER_FLAG_FIELDMASK;
 
-    // Deinterlacing requested
-    if (flags & RENDER_FLAG_FIELDMASK)
+    if (!g_graphicsContext.IsFullScreenVideo())
+      flags &= ~RENDER_FLAG_FIELDS;
+
+    if (flags & RENDER_FLAG_FIELDS)
     {
-      if ((buffer->GetFieldType() == VPU_FIELD_BOTTOM)
-      ||  (buffer->GetFieldType() == VPU_FIELD_BT) )
-        topFieldFirst = false;
-
-      if (flags & RENDER_FLAG_FIELD0)
+      fieldFmt |= IPU_DEINTERLACE_RATE_EN;
+      if (flags & RENDER_FLAG_FIELD1)
       {
-        // Double rate first frame
-        g_IMXContext.SetDeInterlacing(true);
-        g_IMXContext.SetDoubleRate(true);
-        g_IMXContext.SetInterpolatedFrame(true);
-      }
-      else if (flags & RENDER_FLAG_FIELD1)
-      {
-        // Double rate second frame
-        g_IMXContext.SetDeInterlacing(true);
-        g_IMXContext.SetDoubleRate(true);
-        g_IMXContext.SetInterpolatedFrame(false);
-      }
-      else
-      {
-        // Fast motion
-        g_IMXContext.SetDeInterlacing(true);
-        g_IMXContext.SetDoubleRate(false);
+        fieldFmt |= IPU_DEINTERLACE_RATE_FRAME1;
+        // CXBMCRenderManager::PresentFields() is swapping field flag for frame1
+        // this makes IPU render same picture as before, just shifted one line.
+        // let's correct this
+        fieldFmt ^= RENDER_FLAG_FIELDMASK;
       }
     }
-    // Progressive
-    else
-      g_IMXContext.SetDeInterlacing(false);
 
-    g_IMXContext.BlitAsync(NULL, buffer, topFieldFirst);
+    CDVDVideoCodecIMXBuffer *buffer_p = m_bufHistory.front();
+    g_IMXContext.Blit(buffer_p == buffer ? nullptr : buffer_p, buffer, fieldFmt);
   }
 
 #if 0
@@ -214,58 +216,18 @@ bool CRendererIMX::RenderUpdateVideoHook(bool clear, DWORD flags, DWORD alpha)
   printf("r: %d  %d\n", m_iYV12RenderBuffer, (int)(current2-current));
 #endif
 
+  g_IMXContext.WaitVSync();
   return true;
 }
 
 bool CRendererIMX::CreateTexture(int index)
 {
-  YV12Image &im     = m_buffers[index].image;
-  YUVFIELDS &fields = m_buffers[index].fields;
-  YUVPLANE  &plane  = fields[0][0];
-
-  /* Lock buffer to maintain proper ref count */
-  YUVBUFFER &buf = m_buffers[index];
-  CDVDVideoCodecIMXBuffer* buffer = static_cast<CDVDVideoCodecIMXBuffer*>(buf.hwDec);
-  if (buffer)
-    buffer->Lock();
-
-  DeleteTexture(index);
-
-  memset(&im    , 0, sizeof(im));
-  memset(&fields, 0, sizeof(fields));
-
-  im.height = m_sourceHeight;
-  im.width  = m_sourceWidth;
-
-  plane.texwidth  = 0; // Must be actual frame width for pseudo-cropping
-  plane.texheight = 0; // Must be actual frame height for pseudo-cropping
-  plane.pixpertex_x = 1;
-  plane.pixpertex_y = 1;
-
-  glEnable(m_textureTarget);
-  glGenTextures(1, &plane.id);
-  VerifyGLState();
-
-  glBindTexture(m_textureTarget, plane.id);
-
-  glTexParameteri(m_textureTarget, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(m_textureTarget, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-  glDisable(m_textureTarget);
   return true;
 }
 
 void CRendererIMX::DeleteTexture(int index)
 {
-  YUVBUFFER &buf = m_buffers[index];
-  YUVPLANE &plane = buf.fields[0][0];
-  CDVDVideoCodecIMXBuffer* buffer = static_cast<CDVDVideoCodecIMXBuffer*>(buf.hwDec);
-
-  if(plane.id && glIsTexture(plane.id))
-    glDeleteTextures(1, &plane.id);
-  plane.id = 0;
-
-  SAFE_RELEASE(buffer);
+  ReleaseBuffer(index);
 }
 
 bool CRendererIMX::UploadTexture(int index)

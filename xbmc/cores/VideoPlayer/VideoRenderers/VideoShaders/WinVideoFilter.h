@@ -21,6 +21,8 @@
  */
 
 #ifdef HAS_DX
+#include <string>
+#include <vector>
 
 #include "../../guilib/Geometry.h"
 #include "../WinRenderer.h"
@@ -41,6 +43,7 @@ private:
   float        m_contrast;
   float        m_blacklevel;
   unsigned int m_flags;
+  bool         m_limitedRange;
   ERenderFormat m_format;
   XMFLOAT4X4   m_mat;
 };
@@ -77,7 +80,7 @@ class CYUV2RGBShader : public CWinShader
 public:
   virtual bool Create(unsigned int sourceWidth, unsigned int sourceHeight, ERenderFormat fmt);
   virtual void Render(CRect sourceRect,
-                      CRect destRect,
+                      CPoint dest[],
                       float contrast,
                       float brightness,
                       unsigned int flags,
@@ -93,7 +96,7 @@ public:
 
 protected:
   virtual void PrepareParameters(CRect sourceRect,
-                                 CRect destRect,
+                                 CPoint dest[],
                                  float contrast,
                                  float brightness,
                                  unsigned int flags);
@@ -102,15 +105,15 @@ protected:
 private:
   CYUV2RGBMatrix      m_matrix;
   unsigned int        m_sourceWidth, m_sourceHeight;
-  CRect               m_sourceRect , m_destRect;
+  CRect               m_sourceRect;
+  CPoint              m_dest[4];
   ERenderFormat       m_format;
   float               m_texSteps[2];
 
   struct CUSTOMVERTEX {
       FLOAT x, y, z;
       FLOAT tu, tv;   // Y Texture coordinates
-      FLOAT tu2, tv2; // U Texture coordinates
-      FLOAT tu3, tv3; // V Texture coordinates
+      FLOAT tu2, tv2; // U and V Textures coordinates
   };
 };
 
@@ -122,7 +125,8 @@ public:
                                unsigned int sourceWidth, unsigned int sourceHeight,
                                unsigned int destWidth, unsigned int destHeight,
                                CRect sourceRect,
-                               CRect destRect) = 0;
+                               CRect destRect,
+                               bool useLimitRange) = 0;
   CConvolutionShader() : CWinShader() {}
   virtual ~CConvolutionShader();
 
@@ -149,14 +153,15 @@ public:
                                unsigned int sourceWidth, unsigned int sourceHeight,
                                unsigned int destWidth, unsigned int destHeight,
                                CRect sourceRect,
-                               CRect destRect);
+                               CRect destRect,
+                               bool useLimitRange);
   CConvolutionShader1Pass() : CConvolutionShader(), m_sourceWidth(0), m_sourceHeight(0) {}
 
 protected:
   virtual void PrepareParameters(unsigned int sourceWidth, unsigned int sourceHeight,
                                CRect sourceRect,
                                CRect destRect);
-  virtual void SetShaderParameters(CD3DTexture &sourceTexture, float* texSteps, int texStepsCount);
+  virtual void SetShaderParameters(CD3DTexture &sourceTexture, float* texSteps, int texStepsCount, bool useLimitRange);
 
 
 private:
@@ -173,7 +178,8 @@ public:
                                unsigned int sourceWidth, unsigned int sourceHeight,
                                unsigned int destWidth, unsigned int destHeight,
                                CRect sourceRect,
-                               CRect destRect);
+                               CRect destRect,
+                               bool useLimitRange);
   virtual ~CConvolutionShaderSeparable();
 
 protected:
@@ -184,7 +190,7 @@ protected:
                                unsigned int destWidth, unsigned int destHeight,
                                CRect sourceRect,
                                CRect destRect);
-  virtual void SetShaderParameters(CD3DTexture &sourceTexture, float* texSteps, int texStepsCount);
+  virtual void SetShaderParameters(CD3DTexture &sourceTexture, float* texSteps, int texStepsCount, bool useLimitRange);
   virtual void SetStepParams(UINT stepIndex);
 
 private:

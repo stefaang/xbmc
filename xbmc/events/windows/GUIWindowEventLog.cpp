@@ -21,6 +21,7 @@
 #include "GUIWindowEventLog.h"
 #include "FileItem.h"
 #include "GUIUserMessages.h"
+#include "ServiceBroker.h"
 #include "URL.h"
 #include "events/EventLog.h"
 #include "filesystem/EventsDirectory.h"
@@ -48,17 +49,6 @@ bool CGUIWindowEventLog::OnMessage(CGUIMessage& message)
 {
   switch (message.GetMessage())
   {
-  case GUI_MSG_WINDOW_INIT:
-  {
-    m_rootDir.AllowNonLocalSources(false);
-
-    // is this the first time the window is opened?
-    if (m_vecItems->GetPath() == "?" && message.GetStringParam().empty())
-      m_vecItems->SetPath("");
-
-    break;
-  }
-
   case GUI_MSG_CLICKED:
   {
     int iControl = message.GetSenderId();
@@ -78,7 +68,7 @@ bool CGUIWindowEventLog::OnMessage(CGUIMessage& message)
     {
       // update the event level
       CViewStateSettings::GetInstance().CycleEventLevel();
-      CSettings::GetInstance().Save();
+      CServiceBroker::GetSettings().Save();
 
       // update the listing
       Refresh();
@@ -90,7 +80,7 @@ bool CGUIWindowEventLog::OnMessage(CGUIMessage& message)
     {
       // update whether to show higher event levels
       CViewStateSettings::GetInstance().ToggleShowHigherEventLevels();
-      CSettings::GetInstance().Save();
+      CServiceBroker::GetSettings().Save();
 
       // update the listing
       Refresh();
@@ -168,10 +158,7 @@ void CGUIWindowEventLog::GetContextButtons(int itemNumber, CContextButtons &butt
   if (eventPtr == nullptr)
     return;
 
-  buttons.Add(CONTEXT_BUTTON_INFO, g_localizeStrings.Get(19033));
   buttons.Add(CONTEXT_BUTTON_DELETE, g_localizeStrings.Get(1210));
-  if (eventPtr->CanExecute())
-    buttons.Add(CONTEXT_BUTTON_ACTIVATE, eventPtr->GetExecutionLabel());
 }
 
 bool CGUIWindowEventLog::OnContextButton(int itemNumber, CONTEXT_BUTTON button)
@@ -185,14 +172,8 @@ bool CGUIWindowEventLog::OnContextButton(int itemNumber, CONTEXT_BUTTON button)
 
   switch (button)
   {
-  case CONTEXT_BUTTON_INFO:
-    return OnSelect(item);
-
   case CONTEXT_BUTTON_DELETE:
     return OnDelete(item);
-
-  case CONTEXT_BUTTON_ACTIVATE:
-    return OnExecute(item);
 
   default:
     break;
@@ -248,17 +229,6 @@ bool CGUIWindowEventLog::GetDirectory(const std::string &strDirectory, CFileItem
   items.Append(filteredItems);
 
   return result;
-}
-
-std::string CGUIWindowEventLog::GetStartFolder(const std::string &dir)
-{
-  if (dir.empty())
-    return "events://";
-
-  if (URIUtils::PathStarts(dir, "events://"))
-    return dir;
-
-  return CGUIMediaWindow::GetStartFolder(dir);
 }
 
 bool CGUIWindowEventLog::OnSelect(CFileItemPtr item)

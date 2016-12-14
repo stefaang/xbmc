@@ -1,9 +1,8 @@
-#ifndef _RENDER_FLAGS_H_
-#define _RENDER_FLAGS_H_
+#pragma once
 
 /*
- *      Copyright (C) 2005-2013 Team XBMC
- *      http://xbmc.org
+ *      Copyright (C) 2005-2015 Team Kodi
+ *      http://kodi.tv
  *
  *  This Program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -16,7 +15,7 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License
- *  along with XBMC; see the file COPYING.  If not, see
+ *  along with Kodi; see the file COPYING.  If not, see
  *  <http://www.gnu.org/licenses/>.
  *
  */
@@ -53,11 +52,11 @@
 
 /* defines color primaries */
 #define CONF_FLAGS_COLPRI_MASK(a) ((a) & 0xe0)
-#define CONF_FLAGS_COLPRI_BT709   0x20
-#define CONF_FLAGS_COLPRI_BT470M  0x40
-#define CONF_FLAGS_COLPRI_BT470BG 0x60
-#define CONF_FLAGS_COLPRI_170M    0x80
-#define CONF_FLAGS_COLPRI_240M    0xa0
+#define CONF_FLAGS_COLPRI_BT709   0x20  // sRGB, HDTV (ITU-R BT.709)
+#define CONF_FLAGS_COLPRI_BT470M  0x40  // NTSC (1953) (FCC 1953, ITU-R BT.470 System M)
+#define CONF_FLAGS_COLPRI_BT470BG 0x60  // PAL/SECAM (1970) (EBU Tech. 3213, ITU-R BT.470 System B, G)
+#define CONF_FLAGS_COLPRI_170M    0x80  // NTSC (1987) (SMPTE RP 145 "SMPTE C", SMPTE 170M)
+#define CONF_FLAGS_COLPRI_240M    0xa0  // SMPTE-240M
 
 /* defines chroma subsampling sample location */
 #define CONF_FLAGS_CHROMA_MASK(a) ((a) & 0x0300)
@@ -93,4 +92,3 @@ namespace RenderManager {
 
 }
 
-#endif

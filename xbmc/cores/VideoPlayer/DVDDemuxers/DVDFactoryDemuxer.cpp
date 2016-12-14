@@ -22,16 +22,16 @@
 #include "DVDFactoryDemuxer.h"
 
 #include "DVDInputStreams/DVDInputStream.h"
-#include "DVDInputStreams/DVDInputStreamHttp.h"
 #include "DVDInputStreams/DVDInputStreamPVRManager.h"
 
 #include "DVDDemuxFFmpeg.h"
-#include "DVDDemuxShoutcast.h"
 #include "DVDDemuxBXA.h"
 #include "DVDDemuxCDDA.h"
-#include "DVDDemuxPVRClient.h"
+#include "DVDDemuxClient.h"
+#include "DemuxMultiSource.h"
 #include "pvr/PVRManager.h"
-#include "pvr/addons/PVRClients.h"
+#include "utils/log.h"
+#include "utils/URIUtils.h"
 
 using namespace PVR;
 
@@ -68,20 +68,14 @@ CDVDDemux* CDVDFactoryDemuxer::CreateDemuxer(CDVDInputStream* pInputStream, bool
     }
   }
 
-  if (pInputStream->IsStreamType(DVDSTREAM_TYPE_HTTP))
+  // Input stream handles demuxing
+  if (pInputStream->GetIDemux())
   {
-    CDVDInputStreamHttp* pHttpStream = (CDVDInputStreamHttp*)pInputStream;
-    CHttpHeader *header = pHttpStream->GetHttpHeader();
-
-    /* check so we got the meta information as requested in our http header */
-    if( header->GetValue("icy-metaint").length() > 0 )
-    {
-      std::unique_ptr<CDVDDemuxShoutcast> demuxer(new CDVDDemuxShoutcast());
-      if(demuxer->Open(pInputStream))
-        return demuxer.release();
-      else
-        return NULL;
-    }
+    std::unique_ptr<CDVDDemuxClient> demuxer(new CDVDDemuxClient());
+    if(demuxer->Open(pInputStream))
+      return demuxer.release();
+    else
+      return nullptr;
   }
 
   bool streaminfo = true; /* Look for streams before playback */
@@ -94,7 +88,7 @@ CDVDDemux* CDVDFactoryDemuxer::CreateDemuxer(CDVDInputStream* pInputStream, bool
     bool useFastswitch = URIUtils::IsUsingFastSwitch(pInputStream->GetFileName());
     streaminfo = !useFastswitch;
 
-    if(pOtherStream)
+    if (pOtherStream)
     {
       /* Used for MediaPortal PVR addon (uses PVR otherstream for playback of rtsp streams) */
       if (pOtherStream->IsStreamType(DVDSTREAM_TYPE_FFMPEG))
@@ -103,22 +97,7 @@ CDVDDemux* CDVDFactoryDemuxer::CreateDemuxer(CDVDInputStream* pInputStream, bool
         if(demuxer->Open(pOtherStream, streaminfo))
           return demuxer.release();
         else
-          return NULL;
-      }
-    }
-
-    /* Use PVR demuxer only for live streams */
-    if (URIUtils::IsPVRChannel(pInputStream->GetFileName()))
-    {
-      std::shared_ptr<CPVRClient> client;
-      if (g_PVRClients->GetPlayingClient(client) &&
-          client->HandlesDemuxing())
-      {
-        std::unique_ptr<CDVDDemuxPVRClient> demuxer(new CDVDDemuxPVRClient());
-        if(demuxer->Open(pInputStream))
-          return demuxer.release();
-        else
-          return NULL;
+          return nullptr;
       }
     }
   }
@@ -127,6 +106,16 @@ CDVDDemux* CDVDFactoryDemuxer::CreateDemuxer(CDVDInputStream* pInputStream, bool
   {
     bool useFastswitch = URIUtils::IsUsingFastSwitch(pInputStream->GetFileName());
     streaminfo = !useFastswitch;
+  }
+
+  // Try to open the MultiFiles demuxer
+  if (pInputStream->IsStreamType(DVDSTREAM_TYPE_MULTIFILES))
+  {
+    std::unique_ptr<CDemuxMultiSource> demuxer(new CDemuxMultiSource());
+    if (demuxer->Open(pInputStream))
+      return demuxer.release();
+    else
+      return NULL;
   }
 
   std::unique_ptr<CDVDDemuxFFmpeg> demuxer(new CDVDDemuxFFmpeg());

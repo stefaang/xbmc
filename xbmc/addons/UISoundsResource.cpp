@@ -18,6 +18,7 @@
 *
 */
 #include "UISoundsResource.h"
+#include "ServiceBroker.h"
 #include "guilib/GUIAudioManager.h"
 #include "settings/Settings.h"
 #include "utils/StringUtils.h"
@@ -27,11 +28,6 @@
 namespace ADDON
 {
 
-AddonPtr CUISoundsResource::Clone() const
-{
-  return AddonPtr(new CUISoundsResource(*this));
-}
-
 bool CUISoundsResource::IsAllowed(const std::string& file) const
 {
   return StringUtils::EqualsNoCase(file, "sounds.xml")
@@ -40,7 +36,7 @@ bool CUISoundsResource::IsAllowed(const std::string& file) const
 
 bool CUISoundsResource::IsInUse() const
 {
-  return CSettings::GetInstance().GetString(CSettings::SETTING_LOOKANDFEEL_SOUNDSKIN) == ID();
+  return CServiceBroker::GetSettings().GetString(CSettings::SETTING_LOOKANDFEEL_SOUNDSKIN) == ID();
 }
 
 void CUISoundsResource::OnPostInstall(bool update, bool modal)

@@ -21,6 +21,7 @@
  */
 
 #if !defined(TARGET_POSIX) && !defined(HAS_GL)
+#include <vector>
 
 #include "BaseRenderer.h"
 #include "HwDecRender/DXVAHD.h"
@@ -102,23 +103,31 @@ struct SVideoPlane
 
 struct YUVBuffer : SVideoBuffer
 {
-  YUVBuffer() : m_width(0), m_height(0), m_format(RENDER_FMT_NONE), m_activeplanes(0), m_locked(false), m_staging(nullptr)
+  YUVBuffer() : m_width(0), m_height(0)
+              , m_format(RENDER_FMT_NONE)
+              , m_activeplanes(0)
+              , m_locked(false)
+              , m_staging(nullptr)
+              , m_bPending(false)
   {
     memset(&m_sDesc, 0, sizeof(CD3D11_TEXTURE2D_DESC));
   }
   ~YUVBuffer();
   bool Create(ERenderFormat format, unsigned int width, unsigned int height, bool dynamic);
-  virtual void Release();
-  virtual void StartDecode();
-  virtual void StartRender();
-  virtual void Clear();
   unsigned int GetActivePlanes() { return m_activeplanes; }
-  virtual bool IsReadyToRender();
-  bool CopyFromDXVA(ID3D11VideoDecoderOutputView* pView);
+  bool CopyFromPicture(DVDVideoPicture &picture);
+
+  // SVideoBuffer overrides
+  void Release() override;
+  void StartDecode() override;
+  void StartRender() override;
+  void Clear() override;
+  bool IsReadyToRender() override;
 
   SVideoPlane planes[MAX_PLANES];
 
 private:
+  bool CopyFromDXVA(ID3D11VideoDecoderOutputView* pView);
   void PerformCopy();
 
   unsigned int     m_width;
@@ -129,6 +138,7 @@ private:
   D3D11_MAP        m_mapType;
   ID3D11Texture2D* m_staging;
   CD3D11_TEXTURE2D_DESC m_sDesc;
+  bool             m_bPending;
 };
 
 struct DXVABuffer : SVideoBuffer
@@ -150,57 +160,49 @@ public:
   bool RenderCapture(CRenderCapture* capture);
 
   // Player functions
-  virtual bool         Configure(unsigned int width, unsigned int height, unsigned int d_width, unsigned int d_height, float fps, unsigned flags, ERenderFormat format, unsigned extended_format, unsigned int orientation);
-  virtual int          GetImage(YV12Image *image, int source = AUTOSOURCE, bool readonly = false);
-  virtual void         ReleaseImage(int source, bool preserve = false);
-  virtual bool         AddVideoPicture(DVDVideoPicture* picture, int index);
-  virtual void         FlipPage(int source);
-  virtual void         PreInit();
-  virtual void         UnInit();
-  virtual void         Reset(); /* resets renderer after seek for example */
-  virtual bool         IsConfigured() { return m_bConfigured; }
-  virtual void         Flush();
-
+  virtual bool Configure(unsigned int width, unsigned int height, unsigned int d_width, unsigned int d_height, float fps, unsigned flags, ERenderFormat format, unsigned extended_format, unsigned int orientation);
+  virtual int GetImage(YV12Image *image, int source = AUTOSOURCE, bool readonly = false);
+  virtual void ReleaseImage(int source, bool preserve = false);
+  virtual void AddVideoPictureHW(DVDVideoPicture &picture, int index) override;
+  virtual bool IsPictureHW(DVDVideoPicture &picture) override;
+  virtual void FlipPage(int source);
+  virtual void PreInit();
+  virtual void UnInit();
+  virtual void Reset(); /* resets renderer after seek for example */
+  virtual bool IsConfigured() { return m_bConfigured; }
+  virtual void Flush();
   virtual CRenderInfo GetRenderInfo();
+  virtual void RenderUpdate(bool clear, unsigned int flags = 0, unsigned int alpha = 255);
+  virtual void SetBufferSize(int numBuffers) { m_neededBuffers = numBuffers; }
+  virtual void ReleaseBuffer(int idx);
+  virtual bool NeedBuffer(int idx);
+  virtual bool HandlesRenderFormat(ERenderFormat format) override;
 
   // Feature support
-  virtual bool         SupportsMultiPassRendering() { return false; }
-  virtual bool         Supports(ERENDERFEATURE feature);
-  virtual bool         Supports(EDEINTERLACEMODE mode);
-  virtual bool         Supports(EINTERLACEMETHOD method);
-  virtual bool         Supports(ESCALINGMETHOD method);
+  virtual bool SupportsMultiPassRendering() { return false; }
+  virtual bool Supports(ERENDERFEATURE feature);
+  virtual bool Supports(ESCALINGMETHOD method);
 
-  virtual EINTERLACEMETHOD AutoInterlaceMethod();
-
-  void                 RenderUpdate(bool clear, unsigned int flags = 0, unsigned int alpha = 255);
-
-  virtual void         SetBufferSize(int numBuffers) { m_neededBuffers = numBuffers; }
-  virtual void         ReleaseBuffer(int idx);
-  virtual bool         NeedBufferForRef(int idx);
+  virtual bool WantsDoublePass() override;
 
 protected:
   virtual void Render(DWORD flags);
-  void         RenderSW();
-  void         RenderPS();
-  void         Stage1();
-  void         Stage2();
-  void         ScaleGUIShader();
+  void RenderSW();
+  void RenderHW(DWORD flags);
+  void RenderPS();
+  void RenderHQ();
   virtual void ManageTextures();
-  void         DeleteYV12Texture(int index);
-  bool         CreateYV12Texture(int index);
-  int          NextYV12Texture();
-
+  void DeleteYV12Texture(int index);
+  bool CreateYV12Texture(int index);
+  int NextYV12Texture();
   void SelectRenderMethod();
-  bool UpdateRenderMethod();
-
   void UpdateVideoFilter();
   void SelectSWVideoFilter();
   void SelectPSVideoFilter();
   void UpdatePSVideoFilter();
-  bool CreateIntermediateRenderTarget(unsigned int width, unsigned int height);
+  bool CreateIntermediateRenderTarget(unsigned int width, unsigned int height, bool dynamic);
   bool CopyDXVA2YUVBuffer(ID3D11VideoDecoderOutputView* pView, YUVBuffer *pBuf);
 
-  void RenderProcessor(DWORD flags);
   int  m_iYV12RenderBuffer;
   int  m_NumYV12Buffers;
 
@@ -212,15 +214,9 @@ protected:
 
   // software scale libraries (fallback if required pixel shaders version is not available)
   struct SwsContext   *m_sw_scale_ctx;
-
-  // Software rendering
   SHADER_SAMPLER       m_TextureFilter;
-  CD3DTexture          m_SWTarget;
-
-  // PS rendering
   bool                 m_bUseHQScaler;
   CD3DTexture          m_IntermediateTarget;
-
   CYUV2RGBShader*      m_colorShader;
   CConvolutionShader*  m_scalerShader;
 
@@ -228,11 +224,7 @@ protected:
   ESCALINGMETHOD       m_scalingMethodGui;
 
   bool                 m_bFilterInitialized;
-
   int                  m_iRequestedMethod;
-
-  // clear colour for "black" bars
-  DWORD                m_clearColour;
   unsigned int         m_extended_format;
 
   // Width and height of the render target
@@ -242,10 +234,9 @@ protected:
 
   int                  m_neededBuffers;
   unsigned int         m_frameIdx;
+  CRenderCapture*      m_capture = nullptr;
 };
 
 #else
 #include "LinuxRenderer.h"
 #endif
-
-

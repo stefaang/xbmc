@@ -36,24 +36,19 @@
  */
 
 #include "XBDateTime.h"
-#include "addons/include/xbmc_pvr_types.h"
+#include "addons/kodi-addon-dev-kit/include/kodi/xbmc_pvr_types.h"
 #include "video/VideoInfoTag.h"
 
-#define PVR_RECORDING_BASE_PATH     "recordings"
-#define PVR_RECORDING_DELETED_PATH  "deleted"
-#define PVR_RECORDING_ACTIVE_PATH   "active"
+#include "pvr/PVRTypes.h"
+
+#include <string>
+#include <vector>
 
 class CVideoDatabase;
 class CVariant;
 
 namespace PVR
 {
-  class CPVRRecording;
-  typedef std::shared_ptr<PVR::CPVRRecording> CPVRRecordingPtr;
-
-  class CPVRChannel;
-  typedef std::shared_ptr<PVR::CPVRChannel> CPVRChannelPtr;
-
   /*!
    * @brief Representation of a CPVRRecording unique ID.
    */
@@ -63,8 +58,6 @@ namespace PVR
     int           m_iClientId;        /*!< ID of the backend */
     std::string   m_strRecordingId;   /*!< unique ID of the recording on the client */
 
-    CPVRRecordingUid();
-    CPVRRecordingUid(const CPVRRecordingUid& recordingId);
     CPVRRecordingUid(int iClientId, const std::string &strRecordingId);
 
     bool operator >(const CPVRRecordingUid& right) const;
@@ -185,8 +178,6 @@ namespace PVR
 
     const CDateTime &RecordingTimeAsUTC(void) const { return m_recordingTime; }
     const CDateTime &RecordingTimeAsLocalTime(void) const;
-    void SetRecordingTimeFromUTC(CDateTime &recordingTime) { m_recordingTime = recordingTime; }
-    void SetRecordingTimeFromLocalTime(CDateTime &recordingTime) { m_recordingTime = recordingTime.GetAsUTCDateTime(); }
 
     /*!
      * @brief Retrieve the recording title from the URL path
@@ -207,21 +198,33 @@ namespace PVR
     bool IsDeleted() const { return m_bIsDeleted; }
 
     /*!
-     * @return Broadcast id of the EPG event associated with this recording
+     * @brief Check whether this is a tv or radio recording
+     * @return true if this is a radio recording, false if this is a tv recording
      */
-    unsigned int EpgEvent(void) const { return m_iEpgEventId; }
+    bool IsRadio() const { return m_bRadio; }
+
+    /*!
+     * @return Broadcast id of the EPG event associated with this recording or EPG_TAG_INVALID_UID
+     */
+    unsigned int BroadcastUid(void) const { return m_iEpgEventId; }
 
     /*!
      * @return Get the channel on which this recording is/was running
-     * @note Only works if the recording has an EPG id provided by the add-on
+     * @note Only works if the recording has a channel uid provided by the add-on
      */
     CPVRChannelPtr Channel(void) const;
 
     /*!
-     * @return True while the recording is running
-     * @note Only works if the recording has an EPG id provided by the add-on
+     * @brief Get the uid of the channel on which this recording is/was running
+     * @return the uid of the channel or PVR_CHANNEL_INVALID_UID
      */
-    bool IsBeingRecorded(void) const;
+    int ChannelUid(void) const;
+
+    /*!
+     * @brief the identifier of the client that serves this recording
+     * @return the client identifier
+     */
+    int ClientID(void) const;
 
     /*!
      * @brief Retrieve the recording Episode Name
@@ -229,11 +232,19 @@ namespace PVR
      */
     std::string EpisodeName(void) const { return m_strShowTitle; };
 
+    /*!
+     * @brief check whether this recording is currently in progress (according to its start time and duration)
+     * @return true if the recording is in progress, false otherwise
+     */
+    bool IsInProgress() const;
+
   private:
     CDateTime    m_recordingTime; /*!< start time of the recording */
     bool         m_bGotMetaData;
     bool         m_bIsDeleted;    /*!< set if entry is a deleted recording which can be undelete */
     unsigned int m_iEpgEventId;   /*!< epg broadcast id associated with this recording */
+    int          m_iChannelUid;   /*!< channel uid associated with this recording */
+    bool         m_bRadio;        /*!< radio or tv recording */
 
     void UpdatePath(void);
     void DisplayError(PVR_ERROR err) const;

@@ -19,6 +19,7 @@
  */
 
 #include "view/GUIViewState.h"
+#include "ServiceBroker.h"
 #include "events/windows/GUIViewStateEventLog.h"
 #include "pvr/windows/GUIViewStatePVR.h"
 #include "addons/GUIViewStateAddonBrowser.h"
@@ -27,12 +28,14 @@
 #include "pictures/GUIViewStatePictures.h"
 #include "profiles/ProfilesManager.h"
 #include "programs/GUIViewStatePrograms.h"
+#include "games/windows/GUIViewStateWindowGames.h"
 #include "PlayListPlayer.h"
 #include "utils/URIUtils.h"
 #include "URL.h"
 #include "GUIPassword.h"
 #include "ViewDatabase.h"
 #include "AutoSwitch.h"
+#include "dialogs/GUIDialogSelect.h"
 #include "guilib/GUIWindowManager.h"
 #include "addons/Addon.h"
 #include "addons/AddonManager.h"
@@ -44,10 +47,6 @@
 #include "FileItem.h"
 #include "filesystem/AddonsDirectory.h"
 #include "guilib/TextureManager.h"
-
-#if defined(TARGET_ANDROID)
-#include "filesystem/AndroidAppDirectory.h"
-#endif
 
 #define PROPERTY_SORT_ORDER         "sort.order"
 #define PROPERTY_SORT_ASCENDING     "sort.ascending"
@@ -104,7 +103,7 @@ CGUIViewState* CGUIViewState::GetViewState(int windowId, const CFileItemList& it
     return new CGUIViewStateMusicPlaylist(items);
 
   if (items.GetPath() == "special://musicplaylists/")
-    return new CGUIViewStateWindowMusicSongs(items);
+    return new CGUIViewStateWindowMusicNav(items);
 
   if (url.IsProtocol("androidapp"))
     return new CGUIViewStateWindowPrograms(items);
@@ -115,17 +114,11 @@ CGUIViewState* CGUIViewState::GetViewState(int windowId, const CFileItemList& it
   if (windowId == WINDOW_MUSIC_NAV)
     return new CGUIViewStateWindowMusicNav(items);
 
-  if (windowId == WINDOW_MUSIC_FILES)
-    return new CGUIViewStateWindowMusicSongs(items);
-
   if (windowId == WINDOW_MUSIC_PLAYLIST)
     return new CGUIViewStateWindowMusicPlaylist(items);
 
   if (windowId == WINDOW_MUSIC_PLAYLIST_EDITOR)
-    return new CGUIViewStateWindowMusicSongs(items);
-
-  if (windowId == WINDOW_VIDEO_FILES)
-    return new CGUIViewStateWindowVideoFiles(items);
+    return new CGUIViewStateWindowMusicNav(items);
 
   if (windowId == WINDOW_VIDEO_NAV)
     return new CGUIViewStateWindowVideoNav(items);
@@ -145,6 +138,9 @@ CGUIViewState* CGUIViewState::GetViewState(int windowId, const CFileItemList& it
   if (windowId == WINDOW_TV_TIMERS)
     return new CGUIViewStateWindowPVRTimers(windowId, items);
 
+  if (windowId == WINDOW_TV_TIMER_RULES)
+    return new CGUIViewStateWindowPVRTimers(windowId, items);
+
   if (windowId == WINDOW_TV_SEARCH)
     return new CGUIViewStateWindowPVRSearch(windowId, items);
 
@@ -160,6 +156,9 @@ CGUIViewState* CGUIViewState::GetViewState(int windowId, const CFileItemList& it
   if (windowId == WINDOW_RADIO_TIMERS)
     return new CGUIViewStateWindowPVRTimers(windowId, items);
 
+  if (windowId == WINDOW_RADIO_TIMER_RULES)
+    return new CGUIViewStateWindowPVRTimers(windowId, items);
+
   if (windowId == WINDOW_RADIO_SEARCH)
     return new CGUIViewStateWindowPVRSearch(windowId, items);
 
@@ -168,7 +167,10 @@ CGUIViewState* CGUIViewState::GetViewState(int windowId, const CFileItemList& it
 
   if (windowId == WINDOW_PROGRAMS)
     return new CGUIViewStateWindowPrograms(items);
-  
+
+  if (windowId == WINDOW_GAMES)
+    return new GAME::CGUIViewStateWindowGames(items);
+
   if (windowId == WINDOW_ADDON_BROWSER)
     return new CGUIViewStateAddonBrowser(items);
 
@@ -212,7 +214,7 @@ SortOrder CGUIViewState::GetSortOrder() const
 int CGUIViewState::GetSortOrderLabel() const
 {
   if (m_currentSortMethod >= 0 && m_currentSortMethod < (int)m_sortMethods.size())
-    if (m_sortMethods[m_currentSortMethod].m_sortDescription.sortOrder == SortOrderAscending)
+    if (m_sortMethods[m_currentSortMethod].m_sortDescription.sortOrder == SortOrderDescending)
       return 585;
 
   return 584; // default sort order label 'Ascending'
@@ -342,6 +344,28 @@ void CGUIViewState::SetSortMethod(SortDescription sortDescription)
   return SetSortMethod(sortDescription.sortBy, sortDescription.sortOrder);
 }
 
+bool CGUIViewState::ChooseSortMethod()
+{
+  
+  CGUIDialogSelect *dialog = static_cast<CGUIDialogSelect *>(g_windowManager.GetWindow(WINDOW_DIALOG_SELECT));
+  if (!dialog)
+    return false;
+  dialog->Reset();
+  dialog->SetHeading(CVariant{ 39010 }); // Label "Sort by"
+  for (auto &sortMethod : m_sortMethods)
+    dialog->Add(g_localizeStrings.Get(sortMethod.m_buttonLabel));
+  dialog->SetSelected(m_currentSortMethod);
+  dialog->Open();
+  int newSelected = dialog->GetSelectedItem();
+  // check if selection has changed
+  if (!dialog->IsConfirmed() || newSelected < 0 || newSelected == m_currentSortMethod)
+    return false;
+
+  m_currentSortMethod = newSelected;
+  SaveViewState();
+  return true;
+}
+
 SortDescription CGUIViewState::SetNextSortMethod(int direction /* = 1 */)
 {
   m_currentSortMethod += direction;
@@ -358,18 +382,18 @@ SortDescription CGUIViewState::SetNextSortMethod(int direction /* = 1 */)
 
 bool CGUIViewState::HideExtensions()
 {
-  return !CSettings::GetInstance().GetBool(CSettings::SETTING_FILELISTS_SHOWEXTENSIONS);
+  return !CServiceBroker::GetSettings().GetBool(CSettings::SETTING_FILELISTS_SHOWEXTENSIONS);
 }
 
 bool CGUIViewState::HideParentDirItems()
 {
-  return !CSettings::GetInstance().GetBool(CSettings::SETTING_FILELISTS_SHOWPARENTDIRITEMS);
+  return !CServiceBroker::GetSettings().GetBool(CSettings::SETTING_FILELISTS_SHOWPARENTDIRITEMS);
 }
 
 bool CGUIViewState::DisableAddSourceButtons()
 {
   if (CProfilesManager::GetInstance().GetCurrentProfile().canWriteSources() || g_passwordManager.bMasterUser)
-    return !CSettings::GetInstance().GetBool(CSettings::SETTING_FILELISTS_SHOWADDSOURCEBUTTONS);
+    return !CServiceBroker::GetSettings().GetBool(CSettings::SETTING_FILELISTS_SHOWADDSOURCEBUTTONS);
 
   return true;
 }
@@ -440,26 +464,6 @@ void CGUIViewState::AddAddonsSource(const std::string &content, const std::strin
   }
 }
 
-#if defined(TARGET_ANDROID)
-void CGUIViewState::AddAndroidSource(const std::string &content, const std::string &label, const std::string &thumb)
-{
-  CFileItemList items;
-  XFILE::CAndroidAppDirectory apps;
-  const CURL pathToUrl(content);
-  if (apps.GetDirectory(pathToUrl, items))
-  {
-    CMediaSource source;
-    source.strPath = "androidapp://sources/" + content + "/";
-    source.strName = label;
-    if (!thumb.empty() && g_TextureManager.HasTexture(thumb))
-      source.m_strThumbnailImage = thumb;
-    source.m_iDriveType = CMediaSource::SOURCE_TYPE_LOCAL;
-    source.m_ignore = true;
-    m_sources.push_back(source);
-  }
-}
-#endif
-
 void CGUIViewState::AddLiveTVSources()
 {
   VECSOURCES *sources = CMediaSourceSettings::GetInstance().GetSources("video");
@@ -496,7 +500,7 @@ void CGUIViewState::LoadViewState(const std::string &path, int windowID)
     return;
 
   CViewState state;
-  if (db.GetViewState(path, windowID, state, CSettings::GetInstance().GetString(CSettings::SETTING_LOOKANDFEEL_SKIN)) ||
+  if (db.GetViewState(path, windowID, state, CServiceBroker::GetSettings().GetString(CSettings::SETTING_LOOKANDFEEL_SKIN)) ||
       db.GetViewState(path, windowID, state, ""))
   {
     SetViewAsControl(state.m_viewMode);
@@ -515,11 +519,11 @@ void CGUIViewState::SaveViewToDb(const std::string &path, int windowID, CViewSta
   if (viewState != NULL)
     *viewState = state;
 
-  db.SetViewState(path, windowID, state, CSettings::GetInstance().GetString(CSettings::SETTING_LOOKANDFEEL_SKIN));
+  db.SetViewState(path, windowID, state, CServiceBroker::GetSettings().GetString(CSettings::SETTING_LOOKANDFEEL_SKIN));
   db.Close();
 
   if (viewState != NULL)
-    CSettings::GetInstance().Save();
+    CServiceBroker::GetSettings().Save();
 }
 
 void CGUIViewState::AddPlaylistOrder(const CFileItemList &items, LABEL_MASKS label_masks)
@@ -557,7 +561,7 @@ CGUIViewStateFromItems::CGUIViewStateFromItems(const CFileItemList &items) : CGU
     const GUIViewSortDetails sort = details[i];
     AddSortMethod(sort.m_sortDescription, sort.m_buttonLabel, sort.m_labelMasks);
   }
-  // TODO: Should default sort/view mode be specified?
+  //! @todo Should default sort/view mode be specified?
   m_currentSortMethod = 0;
 
   SetViewAsControl(DEFAULT_VIEW_LIST);

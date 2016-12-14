@@ -31,7 +31,6 @@ class CDVDOverlay;
 class CDVDOverlayImage;
 class CDVDOverlaySpu;
 class CDVDOverlaySSA;
-class CRenderManager;
 
 namespace OVERLAY {
 
@@ -79,14 +78,15 @@ namespace OVERLAY {
   class CRenderer
   {
   public:
-    CRenderer(CRenderManager *renderManager);
+    CRenderer();
     virtual ~CRenderer();
 
     void AddOverlay(CDVDOverlay* o, double pts, int index);
-    void Render(int idx);
+    virtual void Render(int idx);
     void Flush();
     void Release(int idx);
     bool HasOverlay(int idx);
+    void SetVideoRect(CRect &source, CRect &dest, CRect &view);
 
   protected:
 
@@ -111,8 +111,9 @@ namespace OVERLAY {
 
     CCriticalSection m_section;
     std::vector<SElement> m_buffers[NUM_BUFFERS];
-    CRenderManager *m_pRenderManager;
     std::map<unsigned int, COverlay*> m_textureCache;
     static unsigned int m_textureid;
+    CRect m_rv, m_rs, m_rd;
+    std::string m_font, m_fontBorder;
   };
 }

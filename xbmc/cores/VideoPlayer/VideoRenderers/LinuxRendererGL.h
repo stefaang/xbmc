@@ -23,15 +23,18 @@
 #include "system.h"
 
 #ifdef HAS_GL
+#include <vector>
+
 #include "system_gl.h"
 
-#include "guilib/FrameBufferObject.h"
+#include "FrameBufferObject.h"
 #include "guilib/Shader.h"
 #include "settings/VideoSettings.h"
 #include "RenderFlags.h"
 #include "RenderFormats.h"
 #include "guilib/GraphicContext.h"
 #include "BaseRenderer.h"
+#include "ColorManager.h"
 
 #include "threads/Event.h"
 
@@ -81,11 +84,9 @@ enum RenderMethod
 {
   RENDER_GLSL=0x01,
   RENDER_ARB=0x02,
-  RENDER_SW=0x04,
   RENDER_VDPAU=0x08,
   RENDER_POT=0x10,
   RENDER_VAAPI=0x20,
-  RENDER_CVREF = 0x40,
 };
 
 enum RenderQuality
@@ -130,14 +131,11 @@ public:
   virtual void RenderUpdate(bool clear, DWORD flags = 0, DWORD alpha = 255);
   virtual void Update();
   virtual bool RenderCapture(CRenderCapture* capture);
-  virtual EINTERLACEMETHOD AutoInterlaceMethod();
   virtual CRenderInfo GetRenderInfo();
 
   // Feature support
   virtual bool SupportsMultiPassRendering();
   virtual bool Supports(ERENDERFEATURE feature);
-  virtual bool Supports(EDEINTERLACEMODE mode);
-  virtual bool Supports(EINTERLACEMETHOD method);
   virtual bool Supports(ESCALINGMETHOD method);
 
 protected:
@@ -169,11 +167,6 @@ protected:
   void DeleteYUV422PackedTexture(int index);
   bool CreateYUV422PackedTexture(int index);
 
-  bool UploadRGBTexture(int index);
-  void ToRGBFrame(YV12Image* im, unsigned flipIndexPlane, unsigned flipIndexBuf);
-  void ToRGBFields(YV12Image* im, unsigned flipIndexPlaneTop, unsigned flipIndexPlaneBot, unsigned flipIndexBuf);
-  void SetupRGBBuffer();
-
   void CalculateTextureSourceRects(int source, int num_planes);
 
   // renderers
@@ -187,6 +180,7 @@ protected:
   // hooks for HwDec Renderered
   virtual bool LoadShadersHook() { return false; };
   virtual bool RenderHook(int idx) { return false; };
+  virtual void AfterRenderHook(int idx) {};
 
   struct
   {
@@ -203,7 +197,7 @@ protected:
   std::vector<ERenderFormat> m_formats;
   bool m_bImageReady;
   GLenum m_textureTarget;
-  unsigned short m_renderMethod;
+  int m_renderMethod;
   RenderQuality m_renderQuality;
   unsigned int m_flipindex; // just a counter to keep track of if a image has been uploaded
   
@@ -284,11 +278,22 @@ protected:
   bool  m_nonLinStretch;
   bool  m_nonLinStretchGui;
   float m_pixelRatio;
+
+  // color management
+  std::unique_ptr<CColorManager> m_ColorManager;
+  GLuint m_tCLUTTex;
+  uint16_t *m_CLUT;
+  int m_CLUTsize;
+  int m_cmsToken;
+  bool m_cmsOn;
+
+  bool LoadCLUT();
+  void DeleteCLUT();
 };
 
 
 inline int NP2( unsigned x ) {
-#if defined(TARGET_POSIX) && !defined(__POWERPC__) && !defined(__PPC__) && !defined(__arm__) && !defined(__mips__)
+#if defined(TARGET_POSIX) && !defined(__POWERPC__) && !defined(__PPC__) && !defined(__arm__) && !defined(__aarch64__) && !defined(__mips__)
   // If there are any issues compiling this, just append a ' && 0'
   // to the above to make it '#if defined(TARGET_POSIX) && 0'
 

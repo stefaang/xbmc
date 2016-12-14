@@ -28,6 +28,7 @@
 #include "Socket.h"
 #include "threads/CriticalSection.h"
 #include "Application.h"
+#include "ServiceBroker.h"
 #include "interfaces/builtins/Builtins.h"
 #include "input/ButtonTranslator.h"
 #include "threads/SingleLock.h"
@@ -87,11 +88,11 @@ void CEventServer::StartServer()
     return;
 
   // set default port
-  m_iPort = CSettings::GetInstance().GetInt(CSettings::SETTING_SERVICES_ESPORT);
+  m_iPort = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_SERVICES_ESPORT);
   assert(m_iPort <= 65535 && m_iPort >= 1);
 
   // max clients
-  m_iMaxClients = CSettings::GetInstance().GetInt(CSettings::SETTING_SERVICES_ESMAXCLIENTS);
+  m_iMaxClients = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_SERVICES_ESMAXCLIENTS);
   if (m_iMaxClients < 0)
   {
     CLog::Log(LOGERROR, "ES: Invalid maximum number of clients specified %d", m_iMaxClients);
@@ -153,11 +154,10 @@ void CEventServer::Process()
 
 void CEventServer::Run()
 {
-  CAddress any_addr;
   CSocketListener listener;
   int packetSize = 0;
 
-  CLog::Log(LOGNOTICE, "ES: Starting UDP Event server on %s:%d", any_addr.Address(), m_iPort);
+  CLog::Log(LOGNOTICE, "ES: Starting UDP Event server on port %d", m_iPort);
 
   Cleanup();
 
@@ -177,13 +177,13 @@ void CEventServer::Run()
   }
 
   // bind to IP and start listening on port
-  int port_range = CSettings::GetInstance().GetInt(CSettings::SETTING_SERVICES_ESPORTRANGE);
+  int port_range = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_SERVICES_ESPORTRANGE);
   if (port_range < 1 || port_range > 100)
   {
     CLog::Log(LOGERROR, "ES: Invalid port range specified %d, defaulting to 10", port_range);
     port_range = 10;
   }
-  if (!m_pSocket->Bind(any_addr, m_iPort, port_range))
+  if (!m_pSocket->Bind(!CServiceBroker::GetSettings().GetBool(CSettings::SETTING_SERVICES_ESALLINTERFACES), m_iPort, port_range))
   {
     CLog::Log(LOGERROR, "ES: Could not listen on port %d", m_iPort);
     return;
@@ -364,7 +364,7 @@ bool CEventServer::ExecuteNextAction()
   return false;
 }
 
-unsigned int CEventServer::GetButtonCode(std::string& strMapName, bool& isAxis, float& fAmount)
+unsigned int CEventServer::GetButtonCode(std::string& strMapName, bool& isAxis, float& fAmount, bool &isJoystick)
 {
   CSingleLock lock(m_critSection);
   std::map<unsigned long, CEventClient*>::iterator iter = m_clients.begin();
@@ -372,7 +372,7 @@ unsigned int CEventServer::GetButtonCode(std::string& strMapName, bool& isAxis, 
 
   while (iter != m_clients.end())
   {
-    bcode = iter->second->GetButtonCode(strMapName, isAxis, fAmount);
+    bcode = iter->second->GetButtonCode(strMapName, isAxis, fAmount, isJoystick);
     if (bcode)
       return bcode;
     ++iter;

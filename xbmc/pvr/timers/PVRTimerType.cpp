@@ -18,7 +18,8 @@
  *
  */
 
-#include "addons/include/xbmc_pvr_types.h"
+#include "ServiceBroker.h"
+#include "addons/kodi-addon-dev-kit/include/kodi/xbmc_pvr_types.h"
 #include "guilib/LocalizeStrings.h"
 #include "pvr/timers/PVRTimerType.h"
 #include "pvr/addons/PVRClients.h"
@@ -142,7 +143,7 @@ void CPVRTimerType::InitPriorityValues(const PVR_TIMER_TYPE &type)
     for (unsigned int i = 0; i < type.iPrioritiesSize; ++i)
     {
       std::string strDescr(type.priorities[i].strDescription);
-      if (strDescr.size() == 0)
+      if (strDescr.empty())
       {
         // No description given by addon. Create one from value.
         strDescr = StringUtils::Format("%d", type.priorities[i].iValue);
@@ -158,12 +159,12 @@ void CPVRTimerType::InitPriorityValues(const PVR_TIMER_TYPE &type)
     for (int i = 1; i < 101; ++i)
       m_priorityValues.push_back(std::make_pair(StringUtils::Format("%d", i), i));
 
-    m_iPriorityDefault = CSettings::GetInstance().GetInt(CSettings::SETTING_PVRRECORD_DEFAULTPRIORITY);
+    m_iPriorityDefault = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_PVRRECORD_DEFAULTPRIORITY);
   }
   else
   {
     // No priority supported.
-    m_iPriorityDefault = CSettings::GetInstance().GetInt(CSettings::SETTING_PVRRECORD_DEFAULTPRIORITY);
+    m_iPriorityDefault = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_PVRRECORD_DEFAULTPRIORITY);
   }
 }
 
@@ -180,7 +181,7 @@ void CPVRTimerType::InitLifetimeValues(const PVR_TIMER_TYPE &type)
     for (unsigned int i = 0; i < type.iLifetimesSize; ++i)
     {
       std::string strDescr(type.lifetimes[i].strDescription);
-      if (strDescr.size() == 0)
+      if (strDescr.empty())
       {
         // No description given by addon. Create one from value.
         strDescr = StringUtils::Format("%d", type.lifetimes[i].iValue);
@@ -197,12 +198,12 @@ void CPVRTimerType::InitLifetimeValues(const PVR_TIMER_TYPE &type)
     {
       m_lifetimeValues.push_back(std::make_pair(StringUtils::Format(g_localizeStrings.Get(17999).c_str(), i), i)); // "%s days"
     }
-    m_iLifetimeDefault = CSettings::GetInstance().GetInt(CSettings::SETTING_PVRRECORD_DEFAULTLIFETIME);
+    m_iLifetimeDefault = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_PVRRECORD_DEFAULTLIFETIME);
   }
   else
   {
     // No lifetime supported.
-    m_iLifetimeDefault = CSettings::GetInstance().GetInt(CSettings::SETTING_PVRRECORD_DEFAULTLIFETIME);
+    m_iLifetimeDefault = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_PVRRECORD_DEFAULTLIFETIME);
   }
 }
 
@@ -219,7 +220,7 @@ void CPVRTimerType::InitMaxRecordingsValues(const PVR_TIMER_TYPE &type)
     for (unsigned int i = 0; i < type.iMaxRecordingsSize; ++i)
     {
       std::string strDescr(type.maxRecordings[i].strDescription);
-      if (strDescr.size() == 0)
+      if (strDescr.empty())
       {
         // No description given by addon. Create one from value.
         strDescr = StringUtils::Format("%d", type.maxRecordings[i].iValue);
@@ -244,7 +245,7 @@ void CPVRTimerType::InitPreventDuplicateEpisodesValues(const PVR_TIMER_TYPE &typ
     for (unsigned int i = 0; i < type.iPreventDuplicateEpisodesSize; ++i)
     {
       std::string strDescr(type.preventDuplicateEpisodes[i].strDescription);
-      if (strDescr.size() == 0)
+      if (strDescr.empty())
       {
         // No description given by addon. Create one from value.
         strDescr = StringUtils::Format("%d", type.preventDuplicateEpisodes[i].iValue);
@@ -259,12 +260,12 @@ void CPVRTimerType::InitPreventDuplicateEpisodesValues(const PVR_TIMER_TYPE &typ
     // No values given by addon, but prevent duplicate episodes supported. Use default values 0..1
     m_preventDupEpisodesValues.push_back(std::make_pair(g_localizeStrings.Get(815), 0)); // "Record all episodes"
     m_preventDupEpisodesValues.push_back(std::make_pair(g_localizeStrings.Get(816), 1)); // "Record only new episodes"
-    m_iPreventDupEpisodesDefault = CSettings::GetInstance().GetInt(CSettings::SETTING_PVRRECORD_PREVENTDUPLICATEEPISODES);
+    m_iPreventDupEpisodesDefault = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_PVRRECORD_PREVENTDUPLICATEEPISODES);
   }
   else
   {
     // No prevent duplicate episodes supported.
-    m_iPreventDupEpisodesDefault = CSettings::GetInstance().GetInt(CSettings::SETTING_PVRRECORD_PREVENTDUPLICATEEPISODES);
+    m_iPreventDupEpisodesDefault = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_PVRRECORD_PREVENTDUPLICATEEPISODES);
   }
 }
 
@@ -281,7 +282,7 @@ void CPVRTimerType::InitRecordingGroupValues(const PVR_TIMER_TYPE &type)
     for (unsigned int i = 0; i < type.iRecordingGroupSize; ++i)
     {
       std::string strDescr(type.recordingGroup[i].strDescription);
-      if (strDescr.size() == 0)
+      if (strDescr.empty())
       {
         // No description given by addon. Create one from value.
         strDescr = StringUtils::Format("%s %d",

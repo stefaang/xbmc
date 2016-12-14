@@ -20,20 +20,23 @@
  *
  */
 
+#include <atomic>
 #include <list>
+#include <vector>
 
 #include "cores/IPlayer.h"
 #include "threads/Thread.h"
 #include "AudioDecoder.h"
-#include "threads/SharedSection.h"
+#include "threads/CriticalSection.h"
 #include "utils/Job.h"
 
 #include "cores/AudioEngine/Interfaces/IAudioCallback.h"
 #include "cores/AudioEngine/Utils/AEChannelInfo.h"
 
 class IAEStream;
-
 class CFileItem;
+class CProcessInfo;
+
 class PAPlayer : public IPlayer, public CThread, public IJobCallback
 {
 friend class CQueueNextFileJob;
@@ -48,8 +51,7 @@ public:
   virtual void OnNothingToQueueNotify();
   virtual bool CloseFile(bool reopen = false);
   virtual bool IsPlaying() const;
-  virtual void Pause();
-  virtual bool IsPaused() const;
+  virtual void Pause() override;
   virtual bool HasVideo() const { return false; }
   virtual bool HasAudio() const { return true; }
   virtual bool CanSeek();
@@ -60,8 +62,8 @@ public:
   virtual void SetDynamicRangeCompression(long drc);
   virtual void GetAudioInfo( std::string& strAudioInfo) {}
   virtual void GetVideoInfo( std::string& strVideoInfo) {}
-  virtual void GetGeneralInfo( std::string& strVideoInfo) {}
-  virtual void ToFFRW(int iSpeed = 0);
+  virtual void SetSpeed(float speed = 0) override;
+  virtual float GetSpeed() override;
   virtual int GetCacheLevel() const;
   virtual int64_t GetTotalTime();
   virtual void SetTotalTime(int64_t time);
@@ -125,7 +127,7 @@ private:
   typedef std::list<StreamInfo*> StreamList;
 
   bool                m_signalSpeedChange;   /* true if OnPlaybackSpeedChange needs to be called */
-  int                 m_playbackSpeed;       /* the playback speed (1 = normal) */
+  std::atomic_int m_playbackSpeed;           /* the playback speed (1 = normal) */
   bool                m_isPlaying;
   bool                m_isPaused;
   bool                m_isFinished;          /* if there are no more songs in the queue */
@@ -137,7 +139,7 @@ private:
 
   CFileItem*          m_FileItem;            /* our queued file or current file if no file is queued */      
 
-  CSharedSection      m_streamsLock;         /* lock for the stream list */
+  CCriticalSection    m_streamsLock;         /* lock for the stream list */
   StreamList          m_streams;             /* playing streams */  
   StreamList          m_finishing;           /* finishing streams */
   int                 m_jobCounter;
@@ -145,6 +147,7 @@ private:
   bool                m_continueStream;
   int64_t             m_newForcedPlayerTime;
   int64_t             m_newForcedTotalTime;
+  std::unique_ptr<CProcessInfo> m_processInfo;
 
   bool QueueNextFileEx(const CFileItem &file, bool fadeIn = true, bool job = false);
   void SoftStart(bool wait = false);

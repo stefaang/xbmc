@@ -22,6 +22,7 @@
 #include "cores/AudioEngine/Interfaces/AEStream.h"
 #include "cores/AudioEngine/Utils/AEAudioFormat.h"
 #include "cores/AudioEngine/Utils/AELimiter.h"
+#include <atomic>
 
 namespace ActiveAE
 {
@@ -88,13 +89,45 @@ protected:
   XbmcThreads::EndTime m_timer;
 };
 
+class CActiveAEStreamBuffers
+{
+public:
+  CActiveAEStreamBuffers(AEAudioFormat inputFormat, AEAudioFormat outputFormat, AEQuality quality);
+  virtual ~CActiveAEStreamBuffers();
+  bool Create(unsigned int totaltime, bool remap, bool upmix, bool normalize = true, bool useDSP = false);
+  void SetExtraData(int profile, enum AVMatrixEncoding matrix_encoding, enum AVAudioServiceType audio_service_type);
+  bool ProcessBuffers();
+  void ConfigureResampler(bool normalizelevels, bool dspenabled, bool stereoupmix, AEQuality quality);
+  bool HasInputLevel(int level);
+  float GetDelay();
+  void Flush();
+  void SetDrain(bool drain);
+  bool IsDrained();
+  void SetRR(double rr, double atempoThreshold);
+  double GetRR();
+  void FillBuffer();
+  bool DoesNormalize();
+  void ForceResampler(bool force);
+  void SetDSPConfig(bool usedsp, bool bypassdsp);
+  bool HasWork();
+  CActiveAEBufferPool *GetResampleBuffers();
+  CActiveAEBufferPool *GetAtempoBuffers();
+  
+  AEAudioFormat m_inputFormat;
+  std::deque<CSampleBuffer*> m_outputSamples;
+  std::deque<CSampleBuffer*> m_inputSamples;
+
+protected:
+  CActiveAEBufferPoolResample *m_resampleBuffers;
+  CActiveAEBufferPoolAtempo *m_atempoBuffers;
+};
 
 class CActiveAEStream : public IAEStream
 {
 protected:
   friend class CActiveAE;
   friend class CEngineStats;
-  CActiveAEStream(AEAudioFormat *format);
+  CActiveAEStream(AEAudioFormat *format, unsigned int streamid);
   virtual ~CActiveAEStream();
   void FadingFinished();
   void IncFreeBuffers();
@@ -106,7 +139,7 @@ protected:
 
 public:
   virtual unsigned int GetSpace();
-  virtual unsigned int AddData(uint8_t* const *data, unsigned int offset, unsigned int frames, double pts = 0.0);
+  virtual unsigned int AddData(const uint8_t* const *data, unsigned int offset, unsigned int frames, double pts = 0.0);
   virtual double GetDelay();
   virtual CAESyncInfo GetSyncInfo();
   virtual bool IsBuffering();
@@ -146,6 +179,7 @@ public:
 
 protected:
 
+  unsigned int m_id;
   AEAudioFormat m_format;
   float m_streamVolume;
   float m_streamRgain;
@@ -162,19 +196,22 @@ protected:
   bool m_bypassDSP;
   IAEStream *m_streamSlave;
   CCriticalSection m_streamLock;
+  CCriticalSection m_statsLock;
   uint8_t *m_leftoverBuffer;
   int m_leftoverBytes;
   CSampleBuffer *m_currentBuffer;
   CSoundPacket *m_remapBuffer;
   IAEResample *m_remapper;
+  double m_lastPts;
+  double m_lastPtsJump;
+  std::atomic_int m_errorInterval;
 
   // only accessed by engine
   CActiveAEBufferPool *m_inputBuffers;
-  CActiveAEBufferPoolResample *m_resampleBuffers;
+  CActiveAEStreamBuffers *m_processingBuffers;
   std::deque<CSampleBuffer*> m_processingSamples;
   CActiveAEDataProtocol *m_streamPort;
   CEvent m_inMsgEvent;
-  CCriticalSection *m_statsLock;
   bool m_drain;
   bool m_paused;
   bool m_started;
@@ -190,19 +227,14 @@ protected:
   int m_profile;
   int m_resampleMode;
   double m_resampleIntegral;
+  double m_clockSpeed;
   enum AVMatrixEncoding m_matrixEncoding;
   enum AVAudioServiceType m_audioServiceType;
   bool m_forceResampler;
   IAEClockCallback *m_pClock;
   CSyncError m_syncError;
   double m_lastSyncError;
-  enum
-  {
-    INSYNC = 0,
-    STARTSYNC,
-    MUTE,
-    ADJUST
-  } m_syncClock;
+  CAESyncInfo::AESyncState m_syncState;
 };
 }
 

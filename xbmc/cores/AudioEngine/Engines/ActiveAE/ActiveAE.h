@@ -19,6 +19,10 @@
  *
  */
 
+#include <list>
+#include <string>
+#include <vector>
+
 #include "system.h"
 #include "threads/Thread.h"
 
@@ -67,6 +71,9 @@ struct AudioSettings
   int guisoundmode;
   unsigned int samplerate;
   AEQuality resampleQuality;
+  double atempoThreshold;
+  bool streamNoise;
+  int silenceTimeout;
 };
 
 class CActiveAEControlProtocol : public Protocol
@@ -177,6 +184,9 @@ public:
   void UpdateSinkDelay(const AEDelayStatus& status, int samples);
   void AddSamples(int samples, std::list<CActiveAEStream*> &streams);
   void GetDelay(AEDelayStatus& status);
+  void AddStream(unsigned int streamid);
+  void RemoveStream(unsigned int streamid);
+  void UpdateStream(CActiveAEStream *stream);
   void GetDelay(AEDelayStatus& status, CActiveAEStream *stream);
   void GetSyncInfo(CAESyncInfo& info, CActiveAEStream *stream);
   float GetCacheTime(CActiveAEStream *stream);
@@ -190,7 +200,6 @@ public:
   bool IsSuspended();
   bool HasDSP();
   AEAudioFormat GetCurrentSinkFormat();
-  CCriticalSection *GetLock() { return &m_lock; }
 protected:
   float m_sinkCacheTotal;
   float m_sinkLatency;
@@ -202,13 +211,19 @@ protected:
   AEAudioFormat m_sinkFormat;
   bool m_pcmOutput;
   CCriticalSection m_lock;
+  struct StreamStats
+  {
+    unsigned int m_streamId;
+    double m_bufferedTime;
+    double m_resampleRatio;
+    double m_syncError;
+    unsigned int m_errorTime;
+    CAESyncInfo::AESyncState m_syncState;
+  };
+  std::vector<StreamStats> m_streamStats;
 };
 
-#if defined(HAS_GLX) || defined(TARGET_DARWIN)
 class CActiveAE : public IAE, public IDispResource, private CThread
-#else
-class CActiveAE : public IAE, private CThread
-#endif
 {
 protected:
   friend class ::CAEFactory;
@@ -358,6 +373,7 @@ protected:
   // streams
   std::list<CActiveAEStream*> m_streams;
   std::list<CActiveAEBufferPool*> m_discardBufferPools;
+  unsigned int m_streamIdGen;
 
   // gui sounds
   struct SoundState

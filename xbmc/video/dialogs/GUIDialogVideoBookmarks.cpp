@@ -1,6 +1,6 @@
 /*
- *      Copyright (C) 2005-2013 Team XBMC
- *      http://xbmc.org
+ *      Copyright (C) 2005-2015 Team Kodi
+ *      http://kodi.tv
  *
  *  This Program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License
- *  along with XBMC; see the file COPYING.  If not, see
+ *  along with Kodi; see the file COPYING.  If not, see
  *  <http://www.gnu.org/licenses/>.
  *
  */
@@ -22,12 +22,7 @@
 #include "GUIDialogVideoBookmarks.h"
 #include "video/VideoDatabase.h"
 #include "Application.h"
-#ifdef HAS_VIDEO_PLAYBACK
-#include "cores/VideoPlayer/VideoRenderers/RenderCapture.h"
-#if defined(HAS_LIBAMCODEC)
-#include "utils/ScreenshotAML.h"
-#endif//HAS_LIBAMCODEC
-#endif//HAS_VIDEO_PLAYBACK
+#include "ServiceBroker.h"
 #include "pictures/Picture.h"
 #include "dialogs/GUIDialogContextMenu.h"
 #include "view/ViewState.h"
@@ -55,13 +50,12 @@
 
 using namespace KODI::MESSAGING;
 
-#define BOOKMARK_THUMB_WIDTH g_advancedSettings.GetThumbSize()
+#define BOOKMARK_THUMB_WIDTH g_advancedSettings.m_imageRes
 
 #define CONTROL_ADD_BOOKMARK           2
 #define CONTROL_CLEAR_BOOKMARKS        3
 #define CONTROL_ADD_EPISODE_BOOKMARK   4
 
-#define CONTROL_LIST                  10
 #define CONTROL_THUMBS                11
 
 CGUIDialogVideoBookmarks::CGUIDialogVideoBookmarks()
@@ -296,7 +290,7 @@ void CGUIDialogVideoBookmarks::OnRefreshList()
     std::string cachefile = CTextureCache::GetInstance().GetCachedPath(CTextureCache::GetInstance().GetCacheFile(chapterPath)+".jpg");
     if (XFILE::CFile::Exists(cachefile))
       item->SetArt("thumb", cachefile);
-    else if (i > m_jobsStarted && CSettings::GetInstance().GetBool(CSettings::SETTING_MYVIDEOS_EXTRACTCHAPTERTHUMBS))
+    else if (i > m_jobsStarted && CServiceBroker::GetSettings().GetBool(CSettings::SETTING_MYVIDEOS_EXTRACTCHAPTERTHUMBS))
     {
       CFileItem item(m_filePath, false);
       CJob* job = new CThumbExtractor(item, m_filePath, true, chapterPath, pos * 1000, false);
@@ -419,7 +413,7 @@ bool CGUIDialogVideoBookmarks::AddBookmark(CVideoInfoTag* tag)
   else
     bookmark.playerState.clear();
 
-  bookmark.player = CPlayerCoreFactory::GetInstance().GetPlayerName(g_application.GetCurrentPlayer());
+  bookmark.player = g_application.GetCurrentPlayer();
 
   // create the thumbnail image
   float aspectRatio = g_application.m_pPlayer->GetRenderAspectRatio();
@@ -430,38 +424,37 @@ bool CGUIDialogVideoBookmarks::AddBookmark(CVideoInfoTag* tag)
     height = BOOKMARK_THUMB_WIDTH;
     width = (int)(BOOKMARK_THUMB_WIDTH * aspectRatio);
   }
+
+
+  uint8_t *pixels = (uint8_t*)malloc(height * width * 4);
+  unsigned int captureId = g_application.m_pPlayer->RenderCaptureAlloc();
+
+  g_application.m_pPlayer->RenderCapture(captureId, width, height, CAPTUREFLAG_IMMEDIATELY);
+  bool hasImage = g_application.m_pPlayer->RenderCaptureGetPixels(captureId, 1000, pixels, height * width * 4);
+
+  if (hasImage)
   {
-#ifdef HAS_VIDEO_PLAYBACK
-    CRenderCapture* thumbnail = g_application.m_pPlayer->RenderCaptureAlloc();
 
-    if (thumbnail)
+    auto crc = Crc32::ComputeFromLowerCase(g_application.CurrentFile());
+    bookmark.thumbNailImage = StringUtils::Format("%08x_%i.jpg", crc, (int)bookmark.timeInSeconds);
+    bookmark.thumbNailImage = URIUtils::AddFileToFolder(CProfilesManager::GetInstance().GetBookmarksThumbFolder(), bookmark.thumbNailImage);
+
+
+    if (!CPicture::CreateThumbnailFromSurface(pixels, width, height, width * 4,
+                                                         bookmark.thumbNailImage))
     {
-      g_application.m_pPlayer->RenderCapture(thumbnail, width, height, CAPTUREFLAG_IMMEDIATELY);
-
-#if !defined(HAS_LIBAMCODEC)
-      if (thumbnail->GetUserState() == CAPTURESTATE_DONE)
-      {
-#else//HAS_LIBAMCODEC
-      {
-        CScreenshotAML::CaptureVideoFrame(thumbnail->GetPixels(), width, height, false);
-#endif
-        Crc32 crc;
-        crc.ComputeFromLowerCase(g_application.CurrentFile());
-        bookmark.thumbNailImage = StringUtils::Format("%08x_%i.jpg", (unsigned __int32) crc, (int)bookmark.timeInSeconds);
-        bookmark.thumbNailImage = URIUtils::AddFileToFolder(CProfilesManager::GetInstance().GetBookmarksThumbFolder(), bookmark.thumbNailImage);
-        if (!CPicture::CreateThumbnailFromSurface(thumbnail->GetPixels(), width, height, thumbnail->GetWidth() * 4,
-                                            bookmark.thumbNailImage))
-          bookmark.thumbNailImage.clear();
-      }
-#if !defined(HAS_LIBAMCODEC)
-      else
-        CLog::Log(LOGERROR,"CGUIDialogVideoBookmarks: failed to create thumbnail");
-#endif
-
-      g_application.m_pPlayer->RenderCaptureRelease(thumbnail);
+      bookmark.thumbNailImage.clear();
     }
-#endif
+    else
+      CLog::Log(LOGERROR,"CGUIDialogVideoBookmarks: failed to create thumbnail");
+
+    g_application.m_pPlayer->RenderCaptureRelease(captureId);
   }
+  else
+    CLog::Log(LOGERROR,"CGUIDialogVideoBookmarks: failed to create thumbnail 2");
+
+  free(pixels);
+
   videoDatabase.Open();
   if (tag)
     videoDatabase.AddBookMarkForEpisode(*tag, bookmark);
@@ -512,7 +505,7 @@ bool CGUIDialogVideoBookmarks::AddEpisodeBookmark()
   videoDatabase.Open();
   videoDatabase.GetEpisodesByFile(g_application.CurrentFile(), episodes);
   videoDatabase.Close();
-  if(episodes.size() > 0)
+  if (!episodes.empty())
   {
     CContextButtons choices;
     for (unsigned int i=0; i < episodes.size(); ++i)

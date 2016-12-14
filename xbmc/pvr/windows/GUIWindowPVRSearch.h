@@ -30,22 +30,24 @@ namespace PVR
     CGUIWindowPVRSearch(bool bRadio);
     virtual ~CGUIWindowPVRSearch(void) {};
 
-    bool OnMessage(CGUIMessage& message);
-    void OnWindowLoaded();
-    void GetContextButtons(int itemNumber, CContextButtons &buttons);
-    bool OnContextButton(int itemNumber, CONTEXT_BUTTON button);
-    bool OnContextButton(const CFileItem &item, CONTEXT_BUTTON button);
+    virtual bool OnMessage(CGUIMessage& message)  override;
+    virtual void OnWindowLoaded() override;
+    virtual void GetContextButtons(int itemNumber, CContextButtons &buttons) override;
+    virtual bool OnContextButton(int itemNumber, CONTEXT_BUTTON button) override;
+
+    /*!
+     * @brief trigger a search for events similar to the given item.
+     * @param item the epg event to search similar events for.
+     * @return True on success (note: empty result set also means success), false otherwise.
+     */
+    bool FindSimilar(const CFileItemPtr &item);
 
   protected:
-    void OnPrepareFileItems(CFileItemList &items);
+    virtual void OnPrepareFileItems(CFileItemList &items) override;
+    virtual std::string GetDirectoryPath(void) override { return ""; }
 
   private:
     bool OnContextButtonClear(CFileItem *item, CONTEXT_BUTTON button);
-    bool OnContextButtonInfo(CFileItem *item, CONTEXT_BUTTON button);
-    bool OnContextButtonPlay(CFileItem *item, CONTEXT_BUTTON button);
-    bool OnContextButtonStartRecord(CFileItem *item, CONTEXT_BUTTON button);
-    bool OnContextButtonStopRecord(CFileItem *item, CONTEXT_BUTTON button);
-    bool OnContextButtonDeleteTimer(CFileItem *item, CONTEXT_BUTTON button);
 
     void OpenDialogSearch();
 

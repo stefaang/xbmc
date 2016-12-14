@@ -23,6 +23,7 @@
 #include "utils/AMLUtils.h"
 #include "utils/StringUtils.h"
 #include "utils/SysfsUtils.h"
+#include "filesystem/SpecialProtocol.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,8 +56,7 @@ bool CEGLNativeTypeAmlogic::CheckCompatibility()
   std::string modalias = "/sys/class/graphics/" + m_framebuffer_name + "/device/modalias";
 
   SysfsUtils::GetString(modalias, name);
-  StringUtils::Trim(name);
-  if (name == "platform:mesonfb")
+  if (name.find("meson") != std::string::npos)
     return true;
   return false;
 }
@@ -142,54 +142,25 @@ bool CEGLNativeTypeAmlogic::SetNativeResolution(const RESOLUTION_INFO &res)
   }
 #endif
 
-  switch((int)(0.5 + res.fRefreshRate))
-  {
-    default:
-    case 60:
-      switch(res.iScreenWidth)
-      {
-        default:
-        case 1280:
-          SetDisplayResolution("720p");
-          break;
-        case 1920:
-          if (res.dwFlags & D3DPRESENTFLAG_INTERLACED)
-            SetDisplayResolution("1080i");
-          else
-            SetDisplayResolution("1080p");
-          break;
-      }
-      break;
-    case 50:
-      switch(res.iScreenWidth)
-      {
-        default:
-        case 1280:
-          SetDisplayResolution("720p50hz");
-          break;
-        case 1920:
-          if (res.dwFlags & D3DPRESENTFLAG_INTERLACED)
-            SetDisplayResolution("1080i50hz");
-          else
-            SetDisplayResolution("1080p50hz");
-          break;
-      }
-      break;
-    case 30:
-      SetDisplayResolution("1080p30hz");
-      break;
-    case 24:
-      SetDisplayResolution("1080p24hz");
-      break;
-  }
+  // Don't set the same mode as current
+  std::string mode;
+  SysfsUtils::GetString("/sys/class/display/mode", mode);
+  if (res.strId == mode)
+    return false;
 
-  return true;
+  return SetDisplayResolution(res.strId.c_str());
 }
 
 bool CEGLNativeTypeAmlogic::ProbeResolutions(std::vector<RESOLUTION_INFO> &resolutions)
 {
-  std::string valstr;
-  SysfsUtils::GetString("/sys/class/amhdmitx/amhdmitx0/disp_cap", valstr);
+  std::string valstr, dcapfile;
+  dcapfile = CSpecialProtocol::TranslatePath("special://home/userdata/disp_cap");
+
+  if (SysfsUtils::GetString(dcapfile, valstr) < 0)
+  {
+    if (SysfsUtils::GetString("/sys/class/amhdmitx/amhdmitx0/disp_cap", valstr) < 0)
+      return false;
+  }
   std::vector<std::string> probe_str = StringUtils::Split(valstr, "\n");
 
   resolutions.clear();

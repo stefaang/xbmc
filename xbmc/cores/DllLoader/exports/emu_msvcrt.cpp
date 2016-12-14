@@ -26,6 +26,7 @@
 #include <io.h>
 #include <direct.h>
 #include <process.h>
+#include <errno.h>
 #else
 #if !defined(TARGET_DARWIN) && !defined(TARGET_FREEBSD)
 #include <mntent.h>
@@ -33,7 +34,7 @@
 #endif
 #include <sys/stat.h>
 #include <sys/types.h>
-#if !defined(TARGET_FREEBSD)
+#if !defined(TARGET_FREEBSD) && (!defined(TARGET_ANDROID) && defined(__LP64__))
 #include <sys/timeb.h>
 #endif
 #include "system.h" // for HAS_DVD_DRIVE
@@ -52,7 +53,10 @@
 #include <signal.h>
 #ifdef TARGET_POSIX
 #include "PlatformDefs.h" // for __stat64
+#include "XFileUtils.h"
+#include "XTimeUtils.h"
 #endif
+#include "ServiceBroker.h"
 #include "Util.h"
 #include "filesystem/SpecialProtocol.h"
 #include "URL.h"
@@ -72,7 +76,7 @@
 #include "utils/URIUtils.h"
 #endif
 #if defined(TARGET_ANDROID)
-#include "android/loader/AndroidDyload.h"
+#include "platform/android/loader/AndroidDyload.h"
 #elif !defined(TARGET_WINDOWS)
 #include <dlfcn.h>
 #endif
@@ -114,7 +118,7 @@ extern "C" void __stdcall init_emu_environ()
   // python
 #if defined(TARGET_WINDOWS)
   // fill our array with the windows system vars
-  LPTSTR lpszVariable; 
+  LPTSTR lpszVariable;
   LPTCH lpvEnv;
   lpvEnv = GetEnvironmentStrings();
   if (lpvEnv != NULL)
@@ -194,22 +198,22 @@ extern "C" void __stdcall init_emu_environ()
 extern "C" void __stdcall update_emu_environ()
 {
   // Use a proxy, if the GUI was configured as such
-  if (CSettings::GetInstance().GetBool(CSettings::SETTING_NETWORK_USEHTTPPROXY)
-      && !CSettings::GetInstance().GetString(CSettings::SETTING_NETWORK_HTTPPROXYSERVER).empty()
-      && CSettings::GetInstance().GetInt(CSettings::SETTING_NETWORK_HTTPPROXYPORT) > 0
-      && CSettings::GetInstance().GetInt(CSettings::SETTING_NETWORK_HTTPPROXYTYPE) == 0)
+  if (CServiceBroker::GetSettings().GetBool(CSettings::SETTING_NETWORK_USEHTTPPROXY)
+      && !CServiceBroker::GetSettings().GetString(CSettings::SETTING_NETWORK_HTTPPROXYSERVER).empty()
+      && CServiceBroker::GetSettings().GetInt(CSettings::SETTING_NETWORK_HTTPPROXYPORT) > 0
+      && CServiceBroker::GetSettings().GetInt(CSettings::SETTING_NETWORK_HTTPPROXYTYPE) == 0)
   {
     std::string strProxy;
-    if (!CSettings::GetInstance().GetString(CSettings::SETTING_NETWORK_HTTPPROXYUSERNAME).empty() &&
-        !CSettings::GetInstance().GetString(CSettings::SETTING_NETWORK_HTTPPROXYPASSWORD).empty())
+    if (!CServiceBroker::GetSettings().GetString(CSettings::SETTING_NETWORK_HTTPPROXYUSERNAME).empty() &&
+        !CServiceBroker::GetSettings().GetString(CSettings::SETTING_NETWORK_HTTPPROXYPASSWORD).empty())
     {
       strProxy = StringUtils::Format("%s:%s@",
-                                     CSettings::GetInstance().GetString(CSettings::SETTING_NETWORK_HTTPPROXYUSERNAME).c_str(),
-                                     CSettings::GetInstance().GetString(CSettings::SETTING_NETWORK_HTTPPROXYPASSWORD).c_str());
+                                     CServiceBroker::GetSettings().GetString(CSettings::SETTING_NETWORK_HTTPPROXYUSERNAME).c_str(),
+                                     CServiceBroker::GetSettings().GetString(CSettings::SETTING_NETWORK_HTTPPROXYPASSWORD).c_str());
     }
 
-    strProxy += CSettings::GetInstance().GetString(CSettings::SETTING_NETWORK_HTTPPROXYSERVER);
-    strProxy += StringUtils::Format(":%d", CSettings::GetInstance().GetInt(CSettings::SETTING_NETWORK_HTTPPROXYPORT));
+    strProxy += CServiceBroker::GetSettings().GetString(CSettings::SETTING_NETWORK_HTTPPROXYSERVER);
+    strProxy += StringUtils::Format(":%d", CServiceBroker::GetSettings().GetInt(CSettings::SETTING_NETWORK_HTTPPROXYPORT));
 
     CEnvironment::setenv( "HTTP_PROXY", "http://" + strProxy, true );
     CEnvironment::setenv( "HTTPS_PROXY", "http://" + strProxy, true );
@@ -567,23 +571,22 @@ extern "C"
     return NULL;
   }
 
-
   int dll_read(int fd, void* buffer, unsigned int uiSize)
   {
     CFile* pFile = g_emuFileWrapper.GetFileXbmcByDescriptor(fd);
     if (pFile != NULL)
     {
-      errno = NOERROR;
+      errno = 0;
       const ssize_t ret = pFile->Read(buffer, uiSize);
       if (ret < 0)
       {
         const int err = errno; // help compiler to optimize, "errno" can be macro
-        if (err == NOERROR ||
+        if (err == 0 ||
             (err != EAGAIN && err != EINTR && err != EIO && err != EOVERFLOW && err != EWOULDBLOCK &&
              err != ECONNRESET && err != ENOTCONN && err != ETIMEDOUT &&
              err != ENOBUFS && err != ENOMEM && err != ENXIO))
           errno = EIO; // exact errno is unknown or incorrect, use default error number
-        
+
         return -1;
       }
       return ret;
@@ -604,12 +607,12 @@ extern "C"
     CFile* pFile = g_emuFileWrapper.GetFileXbmcByDescriptor(fd);
     if (pFile != NULL)
     {
-      errno = NOERROR;
+      errno = 0;
       const ssize_t ret = pFile->Write(buffer, uiSize);
       if (ret < 0)
       {
         const int err = errno; // help compiler to optimize, "errno" can be macro
-        if (err == NOERROR ||
+        if (err == 0 ||
             (err != EAGAIN && err != EFBIG && err != EINTR && err != EIO && err != ENOSPC && err != EPIPE && err != EWOULDBLOCK &&
              err != ECONNRESET &&
              err != ENOBUFS && err != ENXIO &&
@@ -872,14 +875,9 @@ extern "C"
       url.SetFileName(strReplaced);
     }
     int iDirSlot=0; // locate next free directory
-    while ((vecDirsOpen[iDirSlot].curr_index != -1) && (iDirSlot<MAX_OPEN_DIRS)) iDirSlot++;
+    while ((iDirSlot < MAX_OPEN_DIRS) && (vecDirsOpen[iDirSlot].curr_index != -1)) iDirSlot++;
     if (iDirSlot >= MAX_OPEN_DIRS)
       return -1; // no free slots
-    if (url.IsProtocol("filereader"))
-    {
-      CURL url2(url.GetFileName());
-      url = url2;
-    }
     strURL = url.Get();
     bVecDirsInited = true;
     vecDirsOpen[iDirSlot].items.Clear();
@@ -998,12 +996,6 @@ extern "C"
     {
       CLog::Log(LOGDEBUG, "Dll: Max open dirs reached");
       return NULL; // no free slots
-    }
-
-    if (url.IsProtocol("filereader"))
-    {
-      CURL url2(url.GetFileName());
-      url = url2;
     }
 
     bVecDirsInited = true;
@@ -1271,7 +1263,7 @@ extern "C"
 
   int dll_fputc(int character, FILE* stream)
   {
-    if (IS_STDOUT_STREAM(stream) || IS_STDERR_STREAM(stream))
+    if (IS_STDOUT_STREAM(stream) || IS_STDERR_STREAM(stream) || !IS_VALID_STREAM(stream))
     {
       unsigned char tmp[2] = { (unsigned char)character, 0 };
       dllputs((char *)tmp);
@@ -1303,7 +1295,7 @@ extern "C"
 
   int dll_fputs(const char * szLine, FILE* stream)
   {
-    if (IS_STDOUT_STREAM(stream) || IS_STDERR_STREAM(stream))
+    if (IS_STDOUT_STREAM(stream) || IS_STDERR_STREAM(stream) || !IS_VALID_STREAM(stream))
     {
       dllputs(szLine);
       return 0;
@@ -1468,7 +1460,7 @@ extern "C"
     if (size == 0 || count == 0)
       return 0;
 
-    if (IS_STDOUT_STREAM(stream) || IS_STDERR_STREAM(stream))
+    if (IS_STDOUT_STREAM(stream) || IS_STDERR_STREAM(stream) || !IS_VALID_STREAM(stream))
     {
       char* buf = (char*)malloc(size * count + 1);
       if (buf)
@@ -1559,7 +1551,7 @@ extern "C"
     }
     tmp[2048 - 1] = 0;
 
-    if (IS_STDOUT_STREAM(stream) || IS_STDERR_STREAM(stream))
+    if (IS_STDOUT_STREAM(stream) || IS_STDERR_STREAM(stream) || !IS_VALID_STREAM(stream))
     {
       CLog::Log(LOGINFO, "  msg: %s", tmp);
       return strlen(tmp);
@@ -1761,7 +1753,6 @@ extern "C"
     pdup = strdup(str);
     return pdup;
   }
-
 
   //Critical Section has been fixed in EMUkernel32.cpp
 
@@ -2064,8 +2055,6 @@ extern "C"
     return added ? 0 : -1;
   }
 
-
-
   char* dll_getenv(const char* szKey)
   {
     char* value = NULL;
@@ -2223,6 +2212,7 @@ extern "C"
 #endif
   }
 
+#if _MSC_VER < 1900
   int dll_filbuf(FILE *fp)
   {
     if (fp == NULL)
@@ -2281,6 +2271,7 @@ extern "C"
 #endif
   }
 
+#endif
   // this needs to be wrapped, since dll's have their own file
   // descriptor list, but we always use app's list with our wrappers
   int __cdecl dll_open_osfhandle(intptr_t _OSFileHandle, int _Flags)

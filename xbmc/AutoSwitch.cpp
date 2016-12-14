@@ -20,6 +20,7 @@
 
 #include "AutoSwitch.h"
 #include "FileItem.h"
+#include "ServiceBroker.h"
 #include "guilib/GUIWindowManager.h"
 #include "guilib/WindowIDs.h"
 #include "settings/Settings.h"
@@ -44,24 +45,10 @@ int CAutoSwitch::GetView(const CFileItemList &vecItems)
   int iSortMethod = -1;
   int iPercent = 0;
   int iCurrentWindow = g_windowManager.GetActiveWindow();
-  bool bHideParentFolderItems = !CSettings::GetInstance().GetBool(CSettings::SETTING_FILELISTS_SHOWPARENTDIRITEMS);
+  bool bHideParentFolderItems = !CServiceBroker::GetSettings().GetBool(CSettings::SETTING_FILELISTS_SHOWPARENTDIRITEMS);
 
   switch (iCurrentWindow)
   {
-  case WINDOW_MUSIC_FILES:
-    {
-      iSortMethod = METHOD_BYFOLDERTHUMBS;
-      iPercent = 50;
-    }
-    break;
-
-  case WINDOW_VIDEO_FILES:
-    {
-      iSortMethod = METHOD_BYTHUMBPERCENT;
-      iPercent = 50;  // 50% of thumbs -> use thumbs.
-    }
-    break;
-
   case WINDOW_PICTURES:
     {
       iSortMethod = METHOD_BYFILECOUNT;
@@ -252,5 +239,5 @@ float CAutoSwitch::MetadataPercentage(const CFileItemList &vecItems)
     if(item->IsParentFolder())
       total--;
   }
-  return (float)count / total;
+  return (total != 0) ? ((float)count / total) : 0.0f;
 }

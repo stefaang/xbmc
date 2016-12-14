@@ -21,18 +21,22 @@
 #include "threads/SystemClock.h"
 #include "system.h"
 #include "GUIWindowPictures.h"
+#include "ServiceBroker.h"
 #include "URL.h"
 #include "Util.h"
 #include "Application.h"
 #include "GUIPassword.h"
 #include "GUIDialogPictureInfo.h"
 #include "addons/GUIDialogAddonInfo.h"
+#include "dialogs/GUIDialogMediaSource.h"
 #include "dialogs/GUIDialogProgress.h"
 #include "playlists/PlayListFactory.h"
 #include "PictureInfoLoader.h"
 #include "guilib/GUIWindowManager.h"
 #include "input/Key.h"
 #include "dialogs/GUIDialogOK.h"
+#include "view/GUIViewState.h"
+#include "PlayListPlayer.h"
 #include "playlists/PlayList.h"
 #include "settings/MediaSourceSettings.h"
 #include "settings/Settings.h"
@@ -43,8 +47,11 @@
 #include "interfaces/AnnouncementManager.h"
 #include "utils/SortUtils.h"
 #include "utils/StringUtils.h"
-#include "ContextMenuManager.h"
 #include "GUIWindowSlideShow.h"
+
+#ifdef TARGET_POSIX
+#include "linux/XTimeUtils.h"
+#endif
 
 #define CONTROL_BTNVIEWASICONS      2
 #define CONTROL_BTNSORTBY           3
@@ -79,7 +86,7 @@ void CGUIWindowPictures::OnInitWindow()
     {
       if (wndw && wndw->GetCurrentSlide())
         m_viewControl.SetSelectedItem(wndw->GetCurrentSlide()->GetPath());
-      m_iSelectedItem = m_viewControl.GetSelectedItem();
+      SaveSelectedItemInHistory();
     }
     m_slideShowStarted = false;
   }
@@ -98,10 +105,6 @@ bool CGUIWindowPictures::OnMessage(CGUIMessage& message)
       if (m_thumbLoader.IsLoading())
         m_thumbLoader.StopThread();
 
-      if (message.GetParam1() != WINDOW_SLIDESHOW)
-      {
-        m_ImageLib.Unload();
-      }
     }
     break;
 
@@ -112,16 +115,6 @@ bool CGUIWindowPictures::OnMessage(CGUIMessage& message)
         message.SetStringParam(CMediaSourceSettings::GetInstance().GetDefaultSource("pictures"));
 
       m_dlgProgress = (CGUIDialogProgress*)g_windowManager.GetWindow(WINDOW_DIALOG_PROGRESS);
-
-      if (message.GetParam1() != WINDOW_SLIDESHOW)
-      {
-        m_ImageLib.Load();
-      }
-
-      if (!CGUIMediaWindow::OnMessage(message))
-        return false;
-
-      return true;
     }
     break;
 
@@ -138,8 +131,8 @@ bool CGUIWindowPictures::OnMessage(CGUIMessage& message)
       }
       else if (iControl == CONTROL_SHUFFLE)
       {
-        CSettings::GetInstance().ToggleBool(CSettings::SETTING_SLIDESHOW_SHUFFLE);
-        CSettings::GetInstance().Save();
+        CServiceBroker::GetSettings().ToggleBool(CSettings::SETTING_SLIDESHOW_SHUFFLE);
+        CServiceBroker::GetSettings().Save();
       }
       else if (m_viewControl.HasControl(iControl))  // list/thumb control
       {
@@ -150,7 +143,7 @@ bool CGUIWindowPictures::OnMessage(CGUIMessage& message)
         if (iAction == ACTION_DELETE_ITEM)
         {
           // is delete allowed?
-          if (CSettings::GetInstance().GetBool(CSettings::SETTING_FILELISTS_ALLOWFILEDELETION))
+          if (CServiceBroker::GetSettings().GetBool(CSettings::SETTING_FILELISTS_ALLOWFILEDELETION))
             OnDeleteItem(iItem);
           else
             return false;
@@ -177,7 +170,7 @@ void CGUIWindowPictures::UpdateButtons()
   CGUIMediaWindow::UpdateButtons();
 
   // Update the shuffle button
-  SET_CONTROL_SELECTED(GetID(), CONTROL_SHUFFLE, CSettings::GetInstance().GetBool(CSettings::SETTING_SLIDESHOW_SHUFFLE));
+  SET_CONTROL_SELECTED(GetID(), CONTROL_SHUFFLE, CServiceBroker::GetSettings().GetBool(CSettings::SETTING_SLIDESHOW_SHUFFLE));
 
   // check we can slideshow or recursive slideshow
   int nFolders = m_vecItems->GetFolderCount();
@@ -264,7 +257,7 @@ bool CGUIWindowPictures::Update(const std::string &strDirectory, bool updateFilt
     return false;
 
   m_vecItems->SetArt("thumb", "");
-  if (CSettings::GetInstance().GetBool(CSettings::SETTING_PICTURES_GENERATETHUMBS))
+  if (CServiceBroker::GetSettings().GetBool(CSettings::SETTING_PICTURES_GENERATETHUMBS))
     m_thumbLoader.Load(*m_vecItems);
 
   CPictureThumbLoader thumbLoader;
@@ -274,7 +267,7 @@ bool CGUIWindowPictures::Update(const std::string &strDirectory, bool updateFilt
   return true;
 }
 
-bool CGUIWindowPictures::OnClick(int iItem)
+bool CGUIWindowPictures::OnClick(int iItem, const std::string &player)
 {
   if ( iItem < 0 || iItem >= (int)m_vecItems->Size() ) return true;
   CFileItemPtr pItem = m_vecItems->Get(iItem);
@@ -290,7 +283,7 @@ bool CGUIWindowPictures::OnClick(int iItem)
     OnShowPictureRecursive(pathToUrl.Get());
     return true;
   }
-  else if (CGUIMediaWindow::OnClick(iItem))
+  else if (CGUIMediaWindow::OnClick(iItem, player))
     return true;
 
   return false;
@@ -302,13 +295,15 @@ bool CGUIWindowPictures::GetDirectory(const std::string &strDirectory, CFileItem
     return false;
 
   std::string label;
-  if (items.GetLabel().empty() && m_rootDir.IsSource(items.GetPath(), CMediaSourceSettings::GetInstance().GetSources("pictures"), &label)) 
+  if (items.GetLabel().empty() && m_rootDir.IsSource(items.GetPath(), CMediaSourceSettings::GetInstance().GetSources("pictures"), &label))
     items.SetLabel(label);
 
+  if (items.GetContent().empty() && !items.IsVirtualDirectoryRoot() && !items.IsPlugin())
+    items.SetContent("images");
   return true;
 }
 
-bool CGUIWindowPictures::OnPlayMedia(int iItem)
+bool CGUIWindowPictures::OnPlayMedia(int iItem, const std::string &player)
 {
   if (m_vecItems->Get(iItem)->IsVideo())
     return CGUIMediaWindow::OnPlayMedia(iItem);
@@ -342,7 +337,7 @@ bool CGUIWindowPictures::ShowPicture(int iItem, bool startSlideShow)
     CFileItemPtr pItem = m_vecItems->Get(i);
     if (!pItem->m_bIsFolder && !(URIUtils::IsRAR(pItem->GetPath()) || 
           URIUtils::IsZIP(pItem->GetPath())) && (pItem->IsPicture() || (
-                                CSettings::GetInstance().GetBool(CSettings::SETTING_PICTURES_SHOWVIDEOS) &&
+                                CServiceBroker::GetSettings().GetBool(CSettings::SETTING_PICTURES_SHOWVIDEOS) &&
                                 pItem->IsVideo())))
     {
       pSlideShow->Add(pItem.get());
@@ -407,7 +402,7 @@ void CGUIWindowPictures::OnSlideShowRecursive(const std::string &strPicture)
 
     SortDescription sorting = m_guiState->GetSortMethod();
     pSlideShow->RunSlideShow(strPicture, true,
-                             CSettings::GetInstance().GetBool(CSettings::SETTING_SLIDESHOW_SHUFFLE),false,
+                             CServiceBroker::GetSettings().GetBool(CSettings::SETTING_SLIDESHOW_SHUFFLE),false,
                              "", true,
                              sorting.sortBy, sorting.sortOrder, sorting.sortAttributes,
                              strExtensions);
@@ -461,7 +456,7 @@ void CGUIWindowPictures::GetContextButtons(int itemNumber, CContextButtons &butt
   if (itemNumber >= 0 && itemNumber < m_vecItems->Size())
     item = m_vecItems->Get(itemNumber);
 
-  if (item && !item->GetProperty("pluginreplacecontextitems").asBoolean())
+  if (item)
   {
     if ( m_vecItems->IsVirtualDirectoryRoot() || m_vecItems->GetPath() == "sources://pictures/" )
     {
@@ -469,13 +464,12 @@ void CGUIWindowPictures::GetContextButtons(int itemNumber, CContextButtons &butt
     }
     else
     {
-      if (item && !StringUtils::StartsWithNoCase(item->GetPath(), "addons://more/"))
+      if (item)
       {
-        if (!m_vecItems->IsPlugin() && (item->IsPlugin() || item->IsScript()))
-          buttons.Add(CONTEXT_BUTTON_INFO, 24003); // Add-on info
         if (!(item->m_bIsFolder || item->IsZIP() || item->IsRAR() || item->IsCBZ() || item->IsCBR() || item->IsScript()))
         {
-          buttons.Add(CONTEXT_BUTTON_INFO, 13406); // picture info
+          if (item->IsPicture())
+            buttons.Add(CONTEXT_BUTTON_INFO, 13406); // picture info
           buttons.Add(CONTEXT_BUTTON_VIEW_SLIDESHOW, item->m_bIsFolder ? 13317 : 13422);      // View Slideshow
         }
         if (item->m_bIsFolder)
@@ -483,25 +477,18 @@ void CGUIWindowPictures::GetContextButtons(int itemNumber, CContextButtons &butt
 
         if (!m_thumbLoader.IsLoading())
           buttons.Add(CONTEXT_BUTTON_REFRESH_THUMBS, 13315);         // Create Thumbnails
-        if (CSettings::GetInstance().GetBool(CSettings::SETTING_FILELISTS_ALLOWFILEDELETION) && !item->IsReadOnly())
+        if (CServiceBroker::GetSettings().GetBool(CSettings::SETTING_FILELISTS_ALLOWFILEDELETION) && !item->IsReadOnly())
         {
           buttons.Add(CONTEXT_BUTTON_DELETE, 117);
           buttons.Add(CONTEXT_BUTTON_RENAME, 118);
         }
       }
 
-      if (item->IsPlugin() || item->IsScript() || m_vecItems->IsPlugin())
-        buttons.Add(CONTEXT_BUTTON_PLUGIN_SETTINGS, 1045);
-      else
-      {
-        buttons.Add(CONTEXT_BUTTON_GOTO_ROOT, 20128);
+      if (!item->IsPlugin() && !item->IsScript() && !m_vecItems->IsPlugin())
         buttons.Add(CONTEXT_BUTTON_SWITCH_MEDIA, 523);
-      }
     }
   }
   CGUIMediaWindow::GetContextButtons(itemNumber, buttons);
-
-  CContextMenuManager::GetInstance().AddVisibleItems(item, buttons);
 }
 
 bool CGUIWindowPictures::OnContextButton(int itemNumber, CONTEXT_BUTTON button)
@@ -536,9 +523,6 @@ bool CGUIWindowPictures::OnContextButton(int itemNumber, CONTEXT_BUTTON button)
   case CONTEXT_BUTTON_RENAME:
     OnRenameItem(itemNumber);
     return true;
-  case CONTEXT_BUTTON_GOTO_ROOT:
-    Update("");
-    return true;
   case CONTEXT_BUTTON_SWITCH_MEDIA:
     CGUIDialogContextMenu::SwitchMedia("pictures", m_vecItems->GetPath());
     return true;
@@ -546,6 +530,11 @@ bool CGUIWindowPictures::OnContextButton(int itemNumber, CONTEXT_BUTTON button)
     break;
   }
   return CGUIMediaWindow::OnContextButton(itemNumber, button);
+}
+
+bool CGUIWindowPictures::OnAddMediaSource()
+{
+  return CGUIDialogMediaSource::ShowAndAddMediaSource("pictures");
 }
 
 void CGUIWindowPictures::OnItemLoaded(CFileItem *pItem)
@@ -595,7 +584,7 @@ void CGUIWindowPictures::LoadPlayList(const std::string& strPlayList)
 
 void CGUIWindowPictures::OnItemInfo(int itemNumber)
 {
-  CFileItemPtr item = (itemNumber >= 0 && itemNumber < m_vecItems->Size()) ? m_vecItems->Get(itemNumber) : CFileItemPtr();
+  CFileItemPtr item = m_vecItems->Get(itemNumber);
   if (!item)
     return;
   if (!m_vecItems->IsPlugin() && (item->IsPlugin() || item->IsScript()))
@@ -615,8 +604,8 @@ void CGUIWindowPictures::OnItemInfo(int itemNumber)
 
 std::string CGUIWindowPictures::GetStartFolder(const std::string &dir)
 {
-  std::string lower(dir); StringUtils::ToLower(lower);
-  if (lower == "plugins" || lower == "addons")
+  if (StringUtils::EqualsNoCase(dir, "plugins") ||
+      StringUtils::EqualsNoCase(dir, "addons"))
     return "addons://sources/image/";
 
   SetupShares();

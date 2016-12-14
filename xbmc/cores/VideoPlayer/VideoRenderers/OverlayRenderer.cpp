@@ -28,7 +28,9 @@
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayText.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
 #include "guilib/GraphicContext.h"
+#include "guilib/GUIFontManager.h"
 #include "Application.h"
+#include "ServiceBroker.h"
 #include "settings/Settings.h"
 #include "settings/AdvancedSettings.h"
 #include "threads/SingleLock.h"
@@ -60,15 +62,15 @@ COverlay::~COverlay()
 
 unsigned int CRenderer::m_textureid = 1;
 
-CRenderer::CRenderer(CRenderManager *renderManager)
+CRenderer::CRenderer()
 {
-  m_pRenderManager = renderManager;
+  m_font = "__subtitle__";
+  m_fontBorder = "__subtitleborder__";
 }
 
 CRenderer::~CRenderer()
 {
-  for(int i = 0; i < NUM_BUFFERS; i++)
-    Release(m_buffers[i]);
+  Flush();
 }
 
 void CRenderer::AddOverlay(CDVDOverlay* o, double pts, int index)
@@ -86,10 +88,10 @@ void CRenderer::Release(std::vector<SElement>& list)
   std::vector<SElement> l = list;
   list.clear();
 
-  for(std::vector<SElement>::iterator it = l.begin(); it != l.end(); ++it)
+  for (auto &elem : l)
   {
-    if (it->overlay_dvd)
-      it->overlay_dvd->Release();
+    if (elem.overlay_dvd)
+      elem.overlay_dvd->Release();
   }
 }
 
@@ -101,6 +103,9 @@ void CRenderer::Flush()
     Release(m_buffers[i]);
 
   ReleaseCache();
+
+  g_fontManager.Unload(m_font);
+  g_fontManager.Unload(m_fontBorder);
 }
 
 void CRenderer::Release(int idx)
@@ -168,11 +173,25 @@ void CRenderer::Render(int idx)
 
   float total_height = 0.0f;
   float cur_height = 0.0f;
-  int subalign = CSettings::GetInstance().GetInt(CSettings::SETTING_SUBTITLES_ALIGN);
+  int subalign = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_SUBTITLES_ALIGN);
   for (std::vector<COverlay*>::iterator it = render.begin(); it != render.end(); ++it)
   {
-    COverlay* o = *it;
-    o->PrepareRender();
+    COverlay* o = nullptr;
+    COverlayText *text = dynamic_cast<COverlayText*>(*it);
+    if (text)
+    {
+      text->PrepareRender(CServiceBroker::GetSettings().GetString(CSettings::SETTING_SUBTITLES_FONT),
+                          CServiceBroker::GetSettings().GetInt(CSettings::SETTING_SUBTITLES_COLOR),
+                          CServiceBroker::GetSettings().GetInt(CSettings::SETTING_SUBTITLES_HEIGHT),
+                          CServiceBroker::GetSettings().GetInt(CSettings::SETTING_SUBTITLES_STYLE),
+                          m_font, m_fontBorder);
+      o = text;
+    }
+    else
+    {
+      o = *it;
+      o->PrepareRender();
+    }
     total_height += o->m_height;
   }
 
@@ -205,9 +224,6 @@ void CRenderer::Render(int idx)
 
 void CRenderer::Render(COverlay* o, float adjust_height)
 {
-  CRect rs, rd, rv;
-  m_pRenderManager->GetVideoRect(rs, rd, rv);
-
   SRenderState state;
   state.x       = o->m_x;
   state.y       = o->m_y;
@@ -225,14 +241,14 @@ void CRenderer::Render(COverlay* o, float adjust_height)
     if(align == COverlay::ALIGN_SCREEN
     || align == COverlay::ALIGN_SUBTITLE)
     {
-      scale_x = (float)rv.Width();
-      scale_y = (float)rv.Height();
+      scale_x = (float)m_rv.Width();
+      scale_y = (float)m_rv.Height();
     }
 
     if(align == COverlay::ALIGN_VIDEO)
     {
-      scale_x = rs.Width();
-      scale_y = rs.Height();
+      scale_x = m_rs.Width();
+      scale_y = m_rs.Height();
     }
 
     state.x      *= scale_x;
@@ -251,28 +267,28 @@ void CRenderer::Render(COverlay* o, float adjust_height)
       if(align == COverlay::ALIGN_SUBTITLE)
       {
         RESOLUTION_INFO res = g_graphicsContext.GetResInfo(g_graphicsContext.GetVideoResolution());
-        state.x += rv.x1 + rv.Width() * 0.5f;
-        state.y += rv.y1  + (res.iSubtitles - res.Overscan.top);
+        state.x += m_rv.x1 + m_rv.Width() * 0.5f;
+        state.y += m_rv.y1  + (res.iSubtitles - res.Overscan.top);
       }
       else
       {
-        state.x += rv.x1;
-        state.y += rv.y1;
+        state.x += m_rv.x1;
+        state.y += m_rv.y1;
       }
     }
 
     if(align == COverlay::ALIGN_VIDEO)
     {
-      float scale_x = rd.Width() / rs.Width();
-      float scale_y = rd.Height() / rs.Height();
+      float scale_x = m_rd.Width() / m_rs.Width();
+      float scale_y = m_rd.Height() / m_rs.Height();
 
       state.x      *= scale_x;
       state.y      *= scale_y;
       state.width  *= scale_x;
       state.height *= scale_y;
 
-      state.x      += rd.x1;
-      state.y      += rd.y1;
+      state.x      += m_rd.x1;
+      state.y      += m_rd.y1;
     }
 
   }
@@ -301,20 +317,25 @@ bool CRenderer::HasOverlay(int idx)
   return hasOverlay;
 }
 
+void CRenderer::SetVideoRect(CRect &source, CRect &dest, CRect &view)
+{
+  m_rs = source;
+  m_rd = dest;
+  m_rv = view;
+}
+
 COverlay* CRenderer::Convert(CDVDOverlaySSA* o, double pts)
 {
   // libass render in a target area which named as frame. the frame size may bigger than video size,
   // and including margins between video to frame edge. libass allow to render subtitles into the margins.
   // this has been used to show subtitles in the top or bottom "black bar" between video to frame border.
-  CRect src, dst, target;
-  m_pRenderManager->GetVideoRect(src, dst, target);
-  int videoWidth = MathUtils::round_int(dst.Width());
-  int videoHeight = MathUtils::round_int(dst.Height());
-  int targetWidth = MathUtils::round_int(target.Width());
-  int targetHeight = MathUtils::round_int(target.Height());
+  int videoWidth = MathUtils::round_int(m_rd.Width());
+  int videoHeight = MathUtils::round_int(m_rd.Height());
+  int targetWidth = MathUtils::round_int(m_rv.Width());
+  int targetHeight = MathUtils::round_int(m_rv.Height());
   int useMargin;
 
-  int subalign = CSettings::GetInstance().GetInt(CSettings::SETTING_SUBTITLES_ALIGN);
+  int subalign = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_SUBTITLES_ALIGN);
   if(subalign == SUBTITLE_ALIGN_BOTTOM_OUTSIDE
   || subalign == SUBTITLE_ALIGN_TOP_OUTSIDE
   ||(subalign == SUBTITLE_ALIGN_MANUAL && g_advancedSettings.m_videoAssFixedWorks))
@@ -408,4 +429,3 @@ COverlay* CRenderer::Convert(CDVDOverlay* o, double pts)
 
   return r;
 }
-

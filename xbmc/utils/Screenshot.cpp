@@ -23,7 +23,9 @@
 #include "system.h"
 #include <vector>
 
+#include "ServiceBroker.h"
 #include "Util.h"
+#include "URL.h"
 
 #include "Application.h"
 #include "windowing/WindowingFactory.h"
@@ -40,6 +42,7 @@
 
 #include "filesystem/File.h"
 #include "guilib/GraphicContext.h"
+#include "guilib/GUIWindowManager.h"
 
 #include "utils/JobManager.h"
 #include "utils/URIUtils.h"
@@ -75,9 +78,10 @@ bool CScreenshotSurface::capture()
   if (!m_buffer)
     return false;
 #elif defined(HAS_DX)
-  g_graphicsContext.Lock();
 
-  g_application.RenderNoPresent();
+  CSingleLock lock(g_graphicsContext);
+
+  g_windowManager.Render();
   g_Windowing.FinishCommandList();
 
   ID3D11DeviceContext* pImdContext = g_Windowing.GetImmediateContext();
@@ -128,12 +132,10 @@ bool CScreenshotSurface::capture()
   }
   SAFE_RELEASE(pRTTexture);
 
-  g_graphicsContext.Unlock();
-
 #elif defined(HAS_GL) || defined(HAS_GLES)
 
-  g_graphicsContext.BeginPaint();
-  g_application.RenderNoPresent();
+  CSingleLock lock(g_graphicsContext);
+  g_windowManager.Render();
 #ifndef HAS_GLES
   glReadBuffer(GL_BACK);
 #endif
@@ -152,7 +154,6 @@ bool CScreenshotSurface::capture()
 #else
   glReadPixels(viewport[0], viewport[1], viewport[2], viewport[3], GL_BGRA, GL_UNSIGNED_BYTE, (GLvoid*)surface);
 #endif
-  g_graphicsContext.EndPaint();
 
   //make a new buffer and copy the read image to it with the Y axis inverted
   m_buffer = new unsigned char[m_stride * m_height];
@@ -179,7 +180,7 @@ bool CScreenshotSurface::capture()
 #ifdef HAS_IMXVPU
   // Captures the current visible framebuffer page and blends it into the
   // captured GL overlay
-  g_IMXContext.CaptureDisplay(m_buffer, m_width, m_height);
+  g_IMXContext.CaptureDisplay(m_buffer, m_width, m_height, true);
 #endif
 
 #else
@@ -196,11 +197,11 @@ void CScreenShot::TakeScreenshot(const std::string &filename, bool sync)
   CScreenshotSurface surface;
   if (!surface.capture())
   {
-    CLog::Log(LOGERROR, "Screenshot %s failed", filename.c_str());
+    CLog::Log(LOGERROR, "Screenshot %s failed", CURL::GetRedacted(filename).c_str());
     return;
   }
 
-  CLog::Log(LOGDEBUG, "Saving screenshot %s", filename.c_str());
+  CLog::Log(LOGDEBUG, "Saving screenshot %s", CURL::GetRedacted(filename).c_str());
 
   //set alpha byte to 0xFF
   for (int y = 0; y < surface.m_height; y++)
@@ -214,7 +215,7 @@ void CScreenShot::TakeScreenshot(const std::string &filename, bool sync)
   if (sync)
   {
     if (!CPicture::CreateThumbnailFromSurface(surface.m_buffer, surface.m_width, surface.m_height, surface.m_stride, filename))
-      CLog::Log(LOGERROR, "Unable to write screenshot %s", filename.c_str());
+      CLog::Log(LOGERROR, "Unable to write screenshot %s", CURL::GetRedacted(filename).c_str());
 
     delete [] surface.m_buffer;
     surface.m_buffer = NULL;
@@ -226,7 +227,7 @@ void CScreenShot::TakeScreenshot(const std::string &filename, bool sync)
     if (fp)
       fclose(fp);
     else
-      CLog::Log(LOGERROR, "Unable to create file %s", filename.c_str());
+      CLog::Log(LOGERROR, "Unable to create file %s", CURL::GetRedacted(filename).c_str());
 
     //write .png file asynchronous with CThumbnailWriter, prevents stalling of the render thread
     //buffer is deleted from CThumbnailWriter
@@ -244,7 +245,7 @@ void CScreenShot::TakeScreenshot()
   std::string strDir;
 
   // check to see if we have a screenshot folder yet
-  CSettingPath *screenshotSetting = (CSettingPath*)CSettings::GetInstance().GetSetting(CSettings::SETTING_DEBUG_SCREENSHOTPATH);
+  CSettingPath *screenshotSetting = (CSettingPath*)CServiceBroker::GetSettings().GetSetting(CSettings::SETTING_DEBUG_SCREENSHOTPATH);
   if (screenshotSetting != NULL)
   {
     strDir = screenshotSetting->GetValue();

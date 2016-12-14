@@ -19,6 +19,7 @@
  */
 
 #include "Application.h"
+#include "ServiceBroker.h"
 #include "messaging/ApplicationMessenger.h"
 #include "LocalizeStrings.h"
 #include "GUIKeyboardFactory.h"
@@ -32,8 +33,7 @@
 
 #include "dialogs/GUIDialogKeyboardGeneric.h"
 #if defined(TARGET_DARWIN_IOS)
-#include "osx/ios/IOSKeyboard.h"
-#include "windowing/WindowingFactory.h"
+#include "dialogs/GUIDialogKeyboardTouch.h"
 #endif
 
 using namespace KODI::MESSAGING;
@@ -88,7 +88,6 @@ bool CGUIKeyboardFactory::ShowAndGetInput(std::string& aTextString, CVariant hea
 {
   bool confirmed = false;
   CGUIKeyboard *kb = NULL;
-  bool needsFreeing = true;
   //heading can be a string or a localization id
   std::string headingStr;
   if (heading.isString())
@@ -97,24 +96,17 @@ bool CGUIKeyboardFactory::ShowAndGetInput(std::string& aTextString, CVariant hea
     headingStr = g_localizeStrings.Get((uint32_t)heading.asInteger());
 
 #if defined(TARGET_DARWIN_IOS)
-  if (g_Windowing.GetCurrentScreen() == 0)
-    kb = new CIOSKeyboard();
+  kb = (CGUIDialogKeyboardTouch*)g_windowManager.GetWindow(WINDOW_DIALOG_KEYBOARD_TOUCH);
+#else
+  kb = (CGUIDialogKeyboardGeneric*)g_windowManager.GetWindow(WINDOW_DIALOG_KEYBOARD);
 #endif
 
-  if(!kb)
-  {
-    kb = (CGUIDialogKeyboardGeneric*)g_windowManager.GetWindow(WINDOW_DIALOG_KEYBOARD);
-    needsFreeing = false;
-  }
-
-  if(kb)
+  if (kb)
   {
     g_activedKeyboard = kb;
     kb->startAutoCloseTimer(autoCloseMs);
     confirmed = kb->ShowAndGetInput(keyTypedCB, aTextString, aTextString, headingStr, hiddenInput);
     g_activedKeyboard = NULL;
-    if(needsFreeing)
-      delete kb;
   }
 
   if (confirmed)
@@ -206,11 +198,12 @@ int CGUIKeyboardFactory::ShowAndVerifyPassword(std::string& strPassword, const s
   else
     strHeadingTemp = StringUtils::Format("%s - %i %s",
                                          g_localizeStrings.Get(12326).c_str(),
-                                         CSettings::GetInstance().GetInt(CSettings::SETTING_MASTERLOCK_MAXRETRIES) - iRetries,
+                                         CServiceBroker::GetSettings().GetInt(CSettings::SETTING_MASTERLOCK_MAXRETRIES) - iRetries,
                                          g_localizeStrings.Get(12343).c_str());
 
   std::string strUserInput;
-  if (!ShowAndGetInput(strUserInput, strHeadingTemp, false, true, autoCloseMs))  //bool hiddenInput = false/true ? TODO: GUI Setting to enable disable this feature y/n?
+  //! @todo GUI Setting to enable disable this feature y/n?
+  if (!ShowAndGetInput(strUserInput, strHeadingTemp, false, true, autoCloseMs))  //bool hiddenInput = false/true ?
     return -1; // user canceled out
 
   if (!strPassword.empty())

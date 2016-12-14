@@ -23,6 +23,7 @@
 #include "system.h"
 #include "cores/AudioEngine/Utils/AEAudioFormat.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
+#include "cores/VideoPlayer/Process/ProcessInfo.h"
 #include "DVDClock.h"
 
 
@@ -45,6 +46,7 @@ typedef struct stDVDAudioFrame
 {
   uint8_t* data[16];
   double pts;
+  bool hasTimestamp;
   double duration;
   unsigned int nb_frames;
   unsigned int framesize;
@@ -63,7 +65,7 @@ class CDVDAudioCodec
 {
 public:
 
-  CDVDAudioCodec() {}
+  CDVDAudioCodec(CProcessInfo &processInfo) : m_processInfo(processInfo) {}
   virtual ~CDVDAudioCodec() {}
 
   /*
@@ -80,7 +82,7 @@ public:
    * returns bytes used or -1 on error
    *
    */
-  virtual int Decode(uint8_t* pData, int iSize) = 0;
+  virtual int Decode(uint8_t* pData, int iSize, double dts, double pts) = 0;
 
   /*
    * returns nr of bytes in decode buffer
@@ -137,4 +139,7 @@ public:
    * should return the ffmpeg profile value
    */
   virtual int GetProfile() { return 0; }
+
+protected:
+  CProcessInfo &m_processInfo;
 };

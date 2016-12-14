@@ -20,6 +20,7 @@
 #include "system.h"
 #include "Visualisation.h"
 #include "GUIInfoManager.h"
+#include "ServiceBroker.h"
 #include "guiinfo/GUIInfoLabels.h"
 #include "Application.h"
 #include "guilib/GraphicContext.h"
@@ -153,7 +154,6 @@ void CVisualisation::AudioData(const float* pAudioData, int iAudioDataLength, fl
 void CVisualisation::Render()
 {
   // ask visz. to render itself
-  g_graphicsContext.BeginPaint();
   if (Initialized())
   {
     try
@@ -165,7 +165,6 @@ void CVisualisation::Render()
       HandleException(e, "m_pStruct->Render (CVisualisation::Render)");
     }
   }
-  g_graphicsContext.EndPaint();
 }
 
 void CVisualisation::Stop()
@@ -476,5 +475,5 @@ std::string CVisualisation::GetPresetName()
 
 bool CVisualisation::IsInUse() const
 {
-  return CSettings::GetInstance().GetString(CSettings::SETTING_MUSICPLAYER_VISUALISATION) == ID();
+  return CServiceBroker::GetSettings().GetString(CSettings::SETTING_MUSICPLAYER_VISUALISATION) == ID();
 }

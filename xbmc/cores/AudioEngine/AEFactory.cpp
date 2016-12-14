@@ -1,6 +1,6 @@
 /*
- *      Copyright (C) 2010-2013 Team XBMC
- *      http://xbmc.org
+ *      Copyright (C) 2010-2015 Team Kodi
+ *      http://kodi.tv
  *
  *  This Program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -13,10 +13,11 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License
- *  along with XBMC; see the file COPYING.  If not, see
+ *  along with Kodi; see the file COPYING.  If not, see
  *  <http://www.gnu.org/licenses/>.
  *
  */
+
 #include "system.h"
 
 #include "AEFactory.h"
@@ -24,6 +25,7 @@
 #include "Engines/ActiveAE/ActiveAE.h"
 #include "Utils/AEStreamInfo.h"
 
+#include "ServiceBroker.h"
 #include "guilib/LocalizeStrings.h"
 #include "settings/lib/Setting.h"
 #include "settings/Settings.h"
@@ -172,29 +174,29 @@ std::string CAEFactory::GetDefaultDevice(bool passthrough)
 bool CAEFactory::SupportsRaw(AEAudioFormat &format)
 {
   // check if passthrough is enabled
-  if (!CSettings::GetInstance().GetBool(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH))
+  if (!CServiceBroker::GetSettings().GetBool(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH))
     return false;
 
   // fixed config disabled passthrough
-  if (CSettings::GetInstance().GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG) == AE_CONFIG_FIXED)
+  if (CServiceBroker::GetSettings().GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG) == AE_CONFIG_FIXED)
     return false;
 
   // check if the format is enabled in settings
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_AC3 && !CSettings::GetInstance().GetBool(CSettings::SETTING_AUDIOOUTPUT_AC3PASSTHROUGH))
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_AC3 && !CServiceBroker::GetSettings().GetBool(CSettings::SETTING_AUDIOOUTPUT_AC3PASSTHROUGH))
     return false;
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTS_512 && !CSettings::GetInstance().GetBool(CSettings::SETTING_AUDIOOUTPUT_DTSPASSTHROUGH))
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTS_512 && !CServiceBroker::GetSettings().GetBool(CSettings::SETTING_AUDIOOUTPUT_DTSPASSTHROUGH))
     return false;
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTS_1024 && !CSettings::GetInstance().GetBool(CSettings::SETTING_AUDIOOUTPUT_DTSPASSTHROUGH))
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTS_1024 && !CServiceBroker::GetSettings().GetBool(CSettings::SETTING_AUDIOOUTPUT_DTSPASSTHROUGH))
     return false;
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTS_2048 && !CSettings::GetInstance().GetBool(CSettings::SETTING_AUDIOOUTPUT_DTSPASSTHROUGH))
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTS_2048 && !CServiceBroker::GetSettings().GetBool(CSettings::SETTING_AUDIOOUTPUT_DTSPASSTHROUGH))
     return false;
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_CORE && !CSettings::GetInstance().GetBool(CSettings::SETTING_AUDIOOUTPUT_DTSPASSTHROUGH))
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_CORE && !CServiceBroker::GetSettings().GetBool(CSettings::SETTING_AUDIOOUTPUT_DTSPASSTHROUGH))
     return false;
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_EAC3 && !CSettings::GetInstance().GetBool(CSettings::SETTING_AUDIOOUTPUT_EAC3PASSTHROUGH))
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_EAC3 && !CServiceBroker::GetSettings().GetBool(CSettings::SETTING_AUDIOOUTPUT_EAC3PASSTHROUGH))
     return false;
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD && !CSettings::GetInstance().GetBool(CSettings::SETTING_AUDIOOUTPUT_TRUEHDPASSTHROUGH))
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD && !CServiceBroker::GetSettings().GetBool(CSettings::SETTING_AUDIOOUTPUT_TRUEHDPASSTHROUGH))
     return false;
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD && !CSettings::GetInstance().GetBool(CSettings::SETTING_AUDIOOUTPUT_DTSHDPASSTHROUGH))
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD && !CServiceBroker::GetSettings().GetBool(CSettings::SETTING_AUDIOOUTPUT_DTSHDPASSTHROUGH))
     return false;
 
   if(AE)
@@ -352,7 +354,7 @@ void CAEFactory::SettingOptionsAudioDevicesFillerGeneral(const CSetting *setting
   bool foundValue = false;
   AEDeviceList sinkList;
   EnumerateOutputDevices(sinkList, passthrough);
-  if (sinkList.size() == 0)
+  if (sinkList.empty())
     list.push_back(std::make_pair("Error - no devices found", "error"));
   else
   {

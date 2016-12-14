@@ -20,14 +20,10 @@
 */
 
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
-#if defined(TARGET_WINDOWS)
-#include "input/windows/WINJoystick.h"
-#elif defined(HAS_SDL_JOYSTICK) || defined(HAS_EVENT_SERVER)
-#include "input/SDLJoystick.h"
-#endif
 #if defined(HAS_LIRC)
 #include "input/linux/LIRC.h"
 #endif
@@ -39,16 +35,42 @@
 #include "input/KeyboardStat.h"
 #include "input/MouseStat.h"
 #include "settings/lib/ISettingCallback.h"
+#include "threads/CriticalSection.h"
 
 class CKey;
 
+namespace KEYBOARD
+{
+  class IKeyboardHandler;
+}
+
+namespace MOUSE
+{
+  class IMouseButtonMap;
+  class IMouseDriverHandler;
+  class IMouseInputHandler;
+}
+
+/// \addtogroup input
+/// \{
+
+/*!
+ * \ingroup input keyboard mouse touch joystick
+ * \brief Main input processing class.
+ *
+ * This class consolidates all input generated from different sources such as
+ * mouse, keyboard, joystick or touch (in \ref OnEvent).
+ *
+ * \copydoc keyboard
+ * \copydoc mouse
+ */
 class CInputManager : public ISettingCallback
 {
 private:
-  CInputManager() { }
+  CInputManager();
   CInputManager(const CInputManager&);
   CInputManager const& operator=(CInputManager const&);
-  virtual ~CInputManager() { };
+  virtual ~CInputManager();
 
 public:
   /*! \brief static method to get the current instance of the class. Creates a new instance the first time it's called.
@@ -69,13 +91,6 @@ public:
   */
   bool ProcessMouse(int windowId);
 
-  /*! \brief decode a gamepad or joystick event, reset idle timers.
-
-  \param windowId Currently active window
-  \return true if event is handled, false otherwise
-  */
-  bool ProcessGamepad(int windowId);
-
   /*! \brief decode an event from the event service, this can be mouse, key, joystick, reset idle timers.
 
   \param windowId Currently active window
@@ -90,6 +105,14 @@ public:
   \return true if event is handled, false otherwise
   */
   bool ProcessPeripherals(float frameTime);
+
+  /*! \brief Dispatch actions queued since the last call to Process()
+   */
+  void ProcessQueuedActions();
+
+  /*! \brief Queue an action to be processed on the next call to Process()
+   */
+  void QueueAction(const CAction& action);
 
   /*! \brief Process all inputs
    *
@@ -110,18 +133,6 @@ public:
    * \return void
    */
   void SetEnabledJoystick(bool enabled = true);
-
-  /*! \brief Run joystick initialization again, e.g. a new device is connected
-  *
-  * \return void
-  */
-  void ReInitializeJoystick();
-
-  bool ProcessJoystickEvent(int windowId, const std::string& joystickName, int wKeyID, short inputType, float fAmount, unsigned int holdTime = 0);
-
-#if defined(HAS_SDL_JOYSTICK) && !defined(TARGET_WINDOWS)
-  void UpdateJoystick(SDL_Event& joyEvent);
-#endif
 
   /*! \brief Handle an input event
    * 
@@ -214,6 +225,10 @@ public:
    */
   void SetRemoteControlName(const std::string& name);
 
+  /*! \brief Returns whether or not we can handle a given built-in command. */
+
+  bool HasBuiltin(const std::string& command);
+
   /*! \brief Parse a builtin command and execute any input action
    *  currently only LIRC commands implemented
    *
@@ -225,6 +240,32 @@ public:
 
   virtual void OnSettingChanged(const CSetting *setting) override;
 
+  /*! \brief Registers a handler to be called on keyboard input (e.g a game client).
+   *
+   * \param handler The handler to call on keyboard input.
+   */
+  void RegisterKeyboardHandler(KEYBOARD::IKeyboardHandler* handler);
+
+  /*! \brief Unregisters handler from keyboard input.
+   *
+   * \param[in] handler The handler to unregister from keyboard input.
+   */
+  void UnregisterKeyboardHandler(KEYBOARD::IKeyboardHandler* handler);
+
+  /*! \brief Registers a handler to be called on mouse input (e.g a game client).
+   *
+   * \param handler The handler to call on mouse input.
+   * \return[in] The controller ID that serves as a context for incoming events.
+   * \sa IMouseButtonMap
+   */
+  std::string RegisterMouseHandler(MOUSE::IMouseInputHandler* handler);
+
+  /*! \brief Unregisters handler from mouse input.
+   *
+   * \param[in] handler The handler to unregister from mouse input.
+   */
+  void UnregisterMouseHandler(MOUSE::IMouseInputHandler* handler);
+
 private:
 
   /*! \brief Process keyboard event and translate into an action
@@ -234,6 +275,13 @@ private:
   * \sa CKey
   */
   bool OnKey(const CKey& key);
+
+  /*! \brief Process key up event
+   *
+   * \param CKey details of released key
+   * \sa CKey
+   */
+  void OnKeyUp(const CKey& key);
 
   /*! \brief Determine if an action should be processed or just
   *   cancel the screensaver
@@ -265,7 +313,21 @@ private:
   std::map<std::string, std::map<int, float> > m_lastAxisMap;
 #endif
 
-#if defined(HAS_SDL_JOYSTICK) 
-  CJoystick m_Joystick;
-#endif
+  std::vector<CAction> m_queuedActions;
+  CCriticalSection     m_actionMutex;
+
+  std::vector<KEYBOARD::IKeyboardHandler*> m_keyboardHandlers;
+
+  struct MouseHandlerHandle
+  {
+    MOUSE::IMouseInputHandler*                  inputHandler;
+    std::unique_ptr<MOUSE::IMouseDriverHandler> driverHandler;
+  };
+
+  std::vector<MouseHandlerHandle> m_mouseHandlers;
+  std::unique_ptr<MOUSE::IMouseButtonMap> m_mouseButtonMap;
+
+  std::unique_ptr<KEYBOARD::IKeyboardHandler> m_keyboardEasterEgg;
 };
+
+/// \}

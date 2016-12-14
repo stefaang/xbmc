@@ -35,6 +35,7 @@
 #include "SystemBuiltins.h"
 #include "WeatherBuiltins.h"
 
+#include "ServiceBroker.h"
 #include "input/InputManager.h"
 #include "powermanagement/PowerManager.h"
 #include "settings/Settings.h"
@@ -67,6 +68,10 @@ CBuiltins::CBuiltins()
   RegisterCommands<CSystemBuiltins>();
   RegisterCommands<CWeatherBuiltins>();
 
+#if defined(HAVE_LIBCEC)
+  RegisterCommands<CCECBuiltins>();
+#endif
+
 #if defined(TARGET_ANDROID)
   RegisterCommands<CAndroidBuiltins>();
 #endif
@@ -88,6 +93,10 @@ bool CBuiltins::HasCommand(const std::string& execString)
   std::vector<std::string> parameters;
   CUtil::SplitExecFunction(execString, function, parameters);
   StringUtils::ToLower(function);
+
+  if (CInputManager::GetInstance().HasBuiltin(function))
+    return true;
+
   const auto& it = m_command.find(function);
   if (it != m_command.end())
   {
@@ -117,7 +126,7 @@ bool CBuiltins::IsSystemPowerdownCommand(const std::string& execString)
   }
   else if (execute == "shutdown")
   {
-    switch (CSettings::GetInstance().GetInt(CSettings::SETTING_POWERMANAGEMENT_SHUTDOWNSTATE))
+    switch (CServiceBroker::GetSettings().GetInt(CSettings::SETTING_POWERMANAGEMENT_SHUTDOWNSTATE))
     {
       case POWERSTATE_SHUTDOWN:
       case POWERSTATE_SUSPEND:

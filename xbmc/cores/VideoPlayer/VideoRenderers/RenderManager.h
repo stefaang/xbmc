@@ -26,10 +26,13 @@
 #include "cores/VideoPlayer/VideoRenderers/OverlayRenderer.h"
 #include "guilib/Geometry.h"
 #include "guilib/Resolution.h"
-#include "threads/SharedSection.h"
+#include "threads/CriticalSection.h"
 #include "settings/VideoSettings.h"
 #include "OverlayRenderer.h"
+#include "DebugRenderer.h"
 #include <deque>
+#include <map>
+#include <atomic>
 #include "PlatformDefs.h"
 #include "threads/Event.h"
 #include "DVDClock.h"
@@ -41,26 +44,33 @@ namespace VAAPI { class CSurfaceHolder; }
 namespace VDPAU { class CVdpauRenderPicture; }
 struct DVDVideoPicture;
 
-#define ERRORBUFFSIZE 30
-
 class CWinRenderer;
 class CMMALRenderer;
 class CLinuxRenderer;
 class CLinuxRendererGL;
 class CLinuxRendererGLES;
+class CRenderManager;
+
+class IRenderMsg
+{
+  friend CRenderManager;
+protected:
+  virtual void VideoParamsChange() = 0;
+  virtual void GetDebugInfo(std::string &audio, std::string &video, std::string &general) = 0;
+  virtual void UpdateClockSync(bool enabled) = 0;
+  virtual void UpdateRenderInfo(CRenderInfo &info) = 0;
+};
 
 class CRenderManager
 {
 public:
-  CRenderManager(CDVDClock &clock);
+  CRenderManager(CDVDClock &clock, IRenderMsg *player);
   ~CRenderManager();
 
   // Functions called from render thread
   void GetVideoRect(CRect &source, CRect &dest, CRect &view);
   float GetAspectRatio();
-  void Update();
   void FrameMove();
-  void FrameFinish();
   void FrameWait(int ms);
   bool HasFrame();
   void Render(bool clear, DWORD flags = 0, DWORD alpha = 255, bool gui = true);
@@ -74,23 +84,18 @@ public:
   void UnInit();
   bool Flush();
   bool IsConfigured() const;
+  void ToggleDebug();
 
-  CRenderCapture* AllocRenderCapture();
-  void ReleaseRenderCapture(CRenderCapture* capture);
-  void Capture(CRenderCapture *capture, unsigned int width, unsigned int height, int flags);
-  void ManageCaptures();
+  unsigned int AllocRenderCapture();
+  void ReleaseRenderCapture(unsigned int captureId);
+  void StartRenderCapture(unsigned int captureId, unsigned int width, unsigned int height, int flags);
+  bool RenderCaptureGetPixels(unsigned int captureId, unsigned int millis, uint8_t *buffer, unsigned int size);
 
   // Functions called from GUI
   bool Supports(ERENDERFEATURE feature);
-  bool Supports(EDEINTERLACEMODE method);
-  bool Supports(EINTERLACEMETHOD method);
   bool Supports(ESCALINGMETHOD method);
-  EINTERLACEMETHOD AutoInterlaceMethod(EINTERLACEMETHOD mInt);
 
-  static float GetMaximumFPS();
-  double GetDisplayLatency() { return m_displayLatency; }
   int GetSkippedFrames()  { return m_QueueSkip; }
-  std::string GetVSyncState();
 
   // Functions called from mplayer
   /**
@@ -116,20 +121,13 @@ public:
    * @param bStop reference to stop flag of calling thread
    * @param timestamp of frame delivered with AddVideoPicture
    * @param pts used for lateness detection
-   * @param source depreciated
+   * @param method for deinterlacing
    * @param sync signals frame, top, or bottom field
+   * @param wait: block until pic has been rendered
    */
-  void FlipPage(volatile bool& bStop, double timestamp = 0.0, double pts = 0.0, int source = -1, EFIELDSYNC sync = FS_NONE);
+  void FlipPage(volatile std::atomic_bool& bStop, double pts, EINTERLACEMETHOD deintMethod, EFIELDSYNC sync, bool wait);
 
-  void AddOverlay(CDVDOverlay* o, double pts)
-  {
-    { CSingleLock lock(m_presentlock);
-      if (m_free.empty())
-        return;
-    }
-    CSharedLock lock(m_sharedSection);
-    m_overlays.AddOverlay(o, pts, m_free.front());
-  }
+  void AddOverlay(CDVDOverlay* o, double pts);
 
   // Get renderer info, can be called before configure
   CRenderInfo GetRenderInfo();
@@ -142,18 +140,21 @@ public:
    * If no buffering is requested in Configure, player does not need to call this,
    * because FlipPage will block.
    */
-  int WaitForBuffer(volatile bool& bStop, int timeout = 100);
+  int WaitForBuffer(volatile std::atomic_bool& bStop, int timeout = 100);
 
   /**
    * Can be called by player for lateness detection. This is done best by
    * looking at the end of the queue.
    */
-  bool GetStats(double &sleeptime, double &pts, int &queued, int &discard);
+  bool GetStats(int &lateframes, double &pts, int &queued, int &discard);
 
   /**
    * Video player call this on flush in oder to discard any queued frames
    */
   void DiscardBuffer();
+
+  void SetDelay(int delay) { m_videoDelay = delay; };
+  int GetDelay() { return m_videoDelay; };
 
 protected:
 
@@ -162,22 +163,29 @@ protected:
   void PresentBlend(bool clear, DWORD flags, DWORD alpha);
 
   void PrepareNextRender();
-  static double GetPresentTime();
-  void  WaitPresentTime(double presenttime);
 
-  EINTERLACEMETHOD AutoInterlaceMethodInternal(EINTERLACEMETHOD mInt);
   bool Configure();
   void CreateRenderer();
   void DeleteRenderer();
+  void ManageCaptures();
+
+  void UpdateDisplayLatency();
+  void CheckEnableClockSync();
 
   CBaseRenderer *m_pRenderer;
   OVERLAY::CRenderer m_overlays;
-  CSharedSection m_sharedSection;
+  CDebugRenderer m_debugRenderer;
+  CCriticalSection m_statelock;
+  CCriticalSection m_presentlock;
+  CCriticalSection m_datalock;
   bool m_bTriggerUpdateResolution;
   bool m_bRenderGUI;
   int m_waitForBufferCount;
   int m_rendermethod;
   bool m_renderedOverlay;
+  bool m_renderDebug;
+  XbmcThreads::EndTime m_debugTimer;
+
 
   enum EPRESENTSTEP
   {
@@ -206,7 +214,7 @@ protected:
   CEvent m_stateEvent;
 
   double m_displayLatency;
-  void UpdateDisplayLatency();
+  std::atomic_int m_videoDelay;
 
   int m_QueueSize;
   int m_QueueSkip;
@@ -214,7 +222,6 @@ protected:
   struct SPresent
   {
     double         pts;
-    double         timestamp;
     EFIELDSYNC     presentfield;
     EPRESENTMETHOD presentmethod;
   } m_Queue[NUM_BUFFERS];
@@ -231,24 +238,32 @@ protected:
   unsigned int m_orientation;
   int m_NumberBuffers;
 
-  double m_sleeptime;
+  int m_lateframes;
   double m_presentpts;
-  double m_presentcorr;
-  double m_presenterr;
-  double m_errorbuff[ERRORBUFFSIZE];
-  int m_errorindex;
   EPRESENTSTEP m_presentstep;
+  bool m_forceNext;
   int m_presentsource;
   XbmcThreads::ConditionVariable  m_presentevent;
-  CCriticalSection m_presentlock;
   CEvent m_flushEvent;
-  double m_clock_framefinish;
   CDVDClock &m_dvdClock;
+  IRenderMsg *m_playerPort;
+
+  struct CClockSync
+  {
+    void Reset();
+    double m_error;
+    int m_errCount;
+    double m_syncOffset;
+    bool m_enabled;
+  };
+  CClockSync m_clockSync;
 
   void RenderCapture(CRenderCapture* capture);
-  void RemoveCapture(CRenderCapture* capture);
+  void RemoveCaptures();
   CCriticalSection m_captCritSect;
-  std::list<CRenderCapture*> m_captures;
+  std::map<unsigned int, CRenderCapture*> m_captures;
+  static unsigned int m_nextCaptureId;
+  unsigned int m_captureWaitCounter;
   //set to true when adding something to m_captures, set to false when m_captures is made empty
   //std::list::empty() isn't thread safe, using an extra bool will save a lock per render when no captures are requested
   bool m_hasCaptures;

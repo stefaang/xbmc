@@ -22,6 +22,7 @@
 #include "UPnPServer.h"
 #include "UPnPInternal.h"
 #include "Application.h"
+#include "ServiceBroker.h"
 #include "view/GUIViewState.h"
 #include "video/VideoThumbLoader.h"
 #include "music/Artist.h"
@@ -164,7 +165,7 @@ CUPnPServer::PropagateUpdates()
     std::string buffer;
     std::map<std::string, std::pair<bool, unsigned long> >::iterator itr;
 
-    if (m_scanning || !CSettings::GetInstance().GetBool(CSettings::SETTING_SERVICES_UPNPANNOUNCE))
+    if (m_scanning || !CServiceBroker::GetSettings().GetBool(CSettings::SETTING_SERVICES_UPNPANNOUNCE))
         return;
 
     NPT_CHECK_LABEL(FindServiceById("urn:upnp-org:serviceId:ContentDirectory", service), failed);
@@ -616,7 +617,7 @@ CUPnPServer::OnBrowseMetadata(PLT_ActionReference&          action,
     // update ID may be wrong here, it should be the one of the container?
     NPT_CHECK(action->SetArgumentValue("UpdateId", "0"));
 
-    // TODO: We need to keep track of the overall SystemUpdateID of the CDS
+    //! @todo We need to keep track of the overall SystemUpdateID of the CDS
 
     return NPT_SUCCESS;
 }
@@ -1069,6 +1070,7 @@ CUPnPServer::OnUpdateObject(PLT_ActionReference&             action,
                 CBookmark bookmark;
                 bookmark.timeInSeconds = resume;
                 bookmark.totalTimeInSeconds = resume + 100; // not required to be correct
+                bookmark.playerState = new_vals["lastPlayerState"];
 
                 db.AddBookMarkToFile(file_path, bookmark, CBookmark::RESUME);
             }
@@ -1097,7 +1099,7 @@ CUPnPServer::OnUpdateObject(PLT_ActionReference&             action,
         }
 
     } else if (updated.IsMusicDb()) {
-      //TODO implement this
+      //! @todo implement this
 
     } else {
         err = 701;

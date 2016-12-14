@@ -50,17 +50,17 @@ public:
 
   AVCodecID codec;
   StreamType type;
+  int uniqueId;
   bool realtime;
   int flags;
   bool software;  //force software decoding
   std::string filename;
+  bool dvd;
 
 
   // VIDEO
   int fpsscale; // scale of 1001 and a rate of 60000 will result in 59.94 fps
   int fpsrate;
-  int rfpsscale;
-  int rfpsrate;
   int height; // height of the stream reported by the demuxer
   int width; // width of the stream reported by the demuxer
   float aspect; // display aspect as reported by demuxer
@@ -72,7 +72,6 @@ public:
   bool forced_aspect; // aspect is forced from container
   int orientation; // orientation of the video in degress counter clockwise
   int bitsperpixel;
-  int pid;
   std::string stereo_mode; // stereoscopic 3d mode
 
   // AUDIO

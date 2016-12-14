@@ -29,14 +29,16 @@ extern "C" {
 #include "libswresample/swresample.h"
 }
 
+class CProcessInfo;
+
 class CDVDAudioCodecFFmpeg : public CDVDAudioCodec
 {
 public:
-  CDVDAudioCodecFFmpeg();
+  CDVDAudioCodecFFmpeg(CProcessInfo &processInfo);
   virtual ~CDVDAudioCodecFFmpeg();
   virtual bool Open(CDVDStreamInfo &hints, CDVDCodecOptions &options);
   virtual void Dispose();
-  virtual int Decode(uint8_t* pData, int iSize);
+  virtual int Decode(uint8_t* pData, int iSize, double dts, double pts);
   virtual void GetData(DVDAudioFrame &frame);
   virtual int GetData(uint8_t** dst);
   virtual void Reset();
@@ -62,7 +64,6 @@ protected:
   AVFrame* m_pFrame1;
   int m_gotFrame;
 
-  bool m_bOpenedCodec;
   int m_channels;
   uint64_t m_layout;
 

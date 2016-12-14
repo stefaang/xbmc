@@ -25,6 +25,7 @@
 #include "../../DVDStreamInfo.h"
 #include "utils/log.h"
 #include "settings/AdvancedSettings.h"
+#include "DVDCodecs/DVDCodecs.h"
 extern "C" {
 #include "libavutil/opt.h"
 }
@@ -34,10 +35,9 @@ extern "C" {
 #include "cores/AudioEngine/Utils/AEUtil.h"
 #endif
 
-CDVDAudioCodecFFmpeg::CDVDAudioCodecFFmpeg() : CDVDAudioCodec()
+CDVDAudioCodecFFmpeg::CDVDAudioCodecFFmpeg(CProcessInfo &processInfo) : CDVDAudioCodec(processInfo)
 {
   m_pCodecContext = NULL;
-  m_bOpenedCodec = false;
 
   m_channels = 0;
   m_layout = 0;
@@ -55,10 +55,15 @@ CDVDAudioCodecFFmpeg::~CDVDAudioCodecFFmpeg()
 bool CDVDAudioCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 {
   AVCodec* pCodec = NULL;
-  m_bOpenedCodec = false;
+  bool allowdtshddecode = true;
 
-  if (hints.codec == AV_CODEC_ID_DTS && CSettings::GetInstance().GetBool(CSettings::SETTING_AUDIOOUTPUT_SUPPORTSDTSHDCPUDECODING))
-    pCodec = avcodec_find_decoder_by_name("libdcadec");
+  // set any special options
+  for(std::vector<CDVDCodecOption>::iterator it = options.m_keys.begin(); it != options.m_keys.end(); ++it)
+    if (it->m_name == "allowdtshddecode")
+      allowdtshddecode = atoi(it->m_value.c_str());
+
+  if (hints.codec == AV_CODEC_ID_DTS && allowdtshddecode)
+    pCodec = avcodec_find_decoder_by_name("dcadec");
 
   if (!pCodec)
     pCodec = avcodec_find_decoder(hints.codec);
@@ -70,6 +75,9 @@ bool CDVDAudioCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
   }
 
   m_pCodecContext = avcodec_alloc_context3(pCodec);
+  if (!m_pCodecContext)
+    return false;
+
   m_pCodecContext->debug_mv = 0;
   m_pCodecContext->debug = 0;
   m_pCodecContext->workaround_bugs = 1;
@@ -109,36 +117,37 @@ bool CDVDAudioCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
   }
 
   m_pFrame1 = av_frame_alloc();
-  m_bOpenedCodec = true;
+  if (!m_pFrame1)
+  {
+    Dispose();
+    return false;
+  }
+
   m_iSampleFormat = AV_SAMPLE_FMT_NONE;
   m_matrixEncoding = AV_MATRIX_ENCODING_NONE;
 
+  m_processInfo.SetAudioDecoderName(m_pCodecContext->codec->name);
   return true;
 }
 
 void CDVDAudioCodecFFmpeg::Dispose()
 {
-  if (m_pFrame1) av_free(m_pFrame1);
-  m_pFrame1 = NULL;
-
-  if (m_pCodecContext)
-  {
-    if (m_bOpenedCodec) avcodec_close(m_pCodecContext);
-    m_bOpenedCodec = false;
-    av_free(m_pCodecContext);
-    m_pCodecContext = NULL;
-  }
+  av_frame_free(&m_pFrame1);
+  avcodec_free_context(&m_pCodecContext);
 }
 
-int CDVDAudioCodecFFmpeg::Decode(uint8_t* pData, int iSize)
+int CDVDAudioCodecFFmpeg::Decode(uint8_t* pData, int iSize, double dts, double pts)
 {
   int iBytesUsed;
-  if (!m_pCodecContext) return -1;
+  if (!m_pCodecContext)
+    return -1;
 
   AVPacket avpkt;
   av_init_packet(&avpkt);
   avpkt.data = pData;
   avpkt.size = iSize;
+  avpkt.dts = (dts == DVD_NOPTS_VALUE) ? AV_NOPTS_VALUE : dts / DVD_TIME_BASE * AV_TIME_BASE;
+  avpkt.pts = (pts == DVD_NOPTS_VALUE) ? AV_NOPTS_VALUE : pts / DVD_TIME_BASE * AV_TIME_BASE;
   iBytesUsed = avcodec_decode_audio4( m_pCodecContext
                                                  , m_pFrame1
                                                  , &m_gotFrame
@@ -190,7 +199,6 @@ void CDVDAudioCodecFFmpeg::GetData(DVDAudioFrame &frame)
   frame.planes = AE_IS_PLANAR(frame.format.m_dataFormat) ? frame.format.m_channelLayout.Count() : 1;
   frame.bits_per_sample = CAEUtil::DataFormatToBits(frame.format.m_dataFormat);
   frame.format.m_sampleRate = m_format.m_sampleRate;
-  frame.pts = DVD_NOPTS_VALUE;
   frame.matrix_encoding = GetMatrixEncoding();
   frame.audio_service_type = GetAudioServiceType();
   frame.profile = GetProfile();
@@ -199,6 +207,12 @@ void CDVDAudioCodecFFmpeg::GetData(DVDAudioFrame &frame)
     frame.duration = ((double)frame.nb_frames * DVD_TIME_BASE) / frame.format.m_sampleRate;
   else
     frame.duration = 0.0;
+
+  int64_t bpts = av_frame_get_best_effort_timestamp(m_pFrame1);
+  if(bpts != AV_NOPTS_VALUE)
+    frame.pts = (double)bpts * DVD_TIME_BASE / AV_TIME_BASE;
+  else
+    frame.pts = DVD_NOPTS_VALUE;
 }
 
 int CDVDAudioCodecFFmpeg::GetData(uint8_t** dst)

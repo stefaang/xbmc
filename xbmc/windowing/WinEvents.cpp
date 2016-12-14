@@ -38,6 +38,10 @@
 #include "android/WinEventsAndroid.h"
 #define WinEventsType CWinEventsAndroid
 
+#elif defined(TARGET_LINUX) && defined(HAVE_MIR)
+#include "mir/WinEventsMir.h"
+#define WinEventsType CWinEventsMir
+
 #elif (defined(TARGET_FREEBSD) || defined(TARGET_LINUX)) && defined(HAS_SDL_WIN_EVENTS)
 #include "WinEventsSDL.h"
 #define WinEventsType CWinEventsSDL
@@ -45,10 +49,6 @@
 #elif (defined(TARGET_FREEBSD) || defined(TARGET_LINUX)) && defined(HAS_X11_WIN_EVENTS)
 #include "WinEventsX11.h"
 #define WinEventsType CWinEventsX11
-
-#elif defined(HAVE_WAYLAND)
-#include "WinEventsWayland.h"
-#define WinEventsType CWinEventsWayland
 
 #elif defined(TARGET_LINUX) && defined(HAS_LINUX_EVENTS)
 #include "WinEventsLinux.h"

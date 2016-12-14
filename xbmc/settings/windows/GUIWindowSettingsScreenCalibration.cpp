@@ -23,6 +23,7 @@
 #include "guilib/GUIMoverControl.h"
 #include "guilib/GUIResizeControl.h"
 #include "Application.h"
+#include "ServiceBroker.h"
 #include "settings/DisplaySettings.h"
 #include "settings/Settings.h"
 #include "guilib/GUIWindowManager.h"
@@ -137,7 +138,7 @@ bool CGUIWindowSettingsScreenCalibration::OnMessage(CGUIMessage& message)
   case GUI_MSG_WINDOW_DEINIT:
     {
       CDisplaySettings::GetInstance().UpdateCalibrations();
-      CSettings::GetInstance().Save();
+      CServiceBroker::GetSettings().Save();
       g_graphicsContext.SetCalibrating(false);
       // reset our screen resolution to what it was initially
       g_graphicsContext.SetVideoResolution(CDisplaySettings::GetInstance().GetCurrentResolution());
@@ -155,10 +156,7 @@ bool CGUIWindowSettingsScreenCalibration::OnMessage(CGUIMessage& message)
       if (g_application.m_pPlayer->IsPlayingVideo())
       { // don't allow resolution switching if we are playing a video
 
-#ifdef HAS_VIDEO_PLAYBACK
-        RESOLUTION res = g_application.m_pPlayer->GetRenderResolution();
-        g_graphicsContext.SetVideoResolution(res);
-#endif
+        g_application.m_pPlayer->TriggerUpdateResolution();
 
         m_iCurRes = 0;
         m_Res.push_back(g_graphicsContext.GetVideoResolution());

@@ -1,6 +1,6 @@
 /*
- *      Copyright (C) 2005-2013 Team XBMC
- *      http://xbmc.org
+ *      Copyright (C) 2005-2015 Team Kodi
+ *      http://kodi.tv
  *
  *  This Program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License
- *  along with XBMC; see the file COPYING.  If not, see
+ *  along with Kodi; see the file COPYING.  If not, see
  *  <http://www.gnu.org/licenses/>.
  *
  */
@@ -28,6 +28,7 @@
 #include "DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "settings/Settings.h"
 #include "LangInfo.h"
+#include "ServiceBroker.h"
 #include "utils/log.h"
 #include "utils/URIUtils.h"
 #include "filesystem/File.h"
@@ -40,6 +41,10 @@
 #include "settings/DiscSettings.h"
 #include "utils/LangCodeExpander.h"
 #include "filesystem/SpecialProtocol.h"
+
+#ifdef TARGET_POSIX
+#include "linux/XTimeUtils.h"
+#endif
 
 #define LIBBLURAY_BYTESEEK 0
 
@@ -74,7 +79,7 @@ int DllLibbluray::file_eof(BD_FILE_H *file)
 
 int64_t DllLibbluray::file_read(BD_FILE_H *file, uint8_t *buf, int64_t size)
 {
-  return static_cast<CFile*>(file->internal)->Read(buf, size); // TODO: fix size cast
+  return static_cast<CFile*>(file->internal)->Read(buf, size); //! @todo fix size cast
 }
 
 int64_t DllLibbluray::file_write(BD_FILE_H *file, const uint8_t *buf, int64_t size)
@@ -183,7 +188,7 @@ void  bluray_overlay_argb_cb(void *this_gen, const struct bd_argb_overlay_s * co
 }
 #endif
 
-CDVDInputStreamBluray::CDVDInputStreamBluray(IVideoPlayer* player, CFileItem& fileitem) :
+CDVDInputStreamBluray::CDVDInputStreamBluray(IVideoPlayer* player, const CFileItem& fileitem) :
   CDVDInputStream(DVDSTREAM_TYPE_BLURAY, fileitem)
 {
   m_title = NULL;
@@ -361,7 +366,7 @@ bool CDVDInputStreamBluray::Open()
     return false;
   }
 
-  int mode = CSettings::GetInstance().GetInt(CSettings::SETTING_DISC_PLAYBACK);
+  int mode = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_DISC_PLAYBACK);
 
   if (URIUtils::HasExtension(filename, ".mpls"))
   {
@@ -601,6 +606,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
 
 int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
 {
+  m_dispTimeBeforeRead = (int)(m_dll->bd_tell_time(m_bd) / 90);
   if(m_navmode)
   {
     int result = 0;
@@ -897,10 +903,10 @@ int CDVDInputStreamBluray::GetTotalTime()
 
 int CDVDInputStreamBluray::GetTime()
 {
-  return (int)(m_dll->bd_tell_time(m_bd) / 90);
+  return m_dispTimeBeforeRead;
 }
 
-bool CDVDInputStreamBluray::SeekTime(int ms)
+bool CDVDInputStreamBluray::PosTime(int ms)
 {
   if(m_dll->bd_seek_time(m_bd, ms * 90) < 0)
     return false;
@@ -1105,7 +1111,7 @@ bool CDVDInputStreamBluray::IsInMenu()
 {
   if(m_bd == NULL || !m_navmode)
     return false;
-  if(m_menu || m_planes[BD_OVERLAY_IG].o.size() > 0)
+  if(m_menu || !m_planes[BD_OVERLAY_IG].o.empty())
     return true;
   return false;
 }
@@ -1129,7 +1135,7 @@ bool CDVDInputStreamBluray::HasMenu()
 
 void CDVDInputStreamBluray::SetupPlayerSettings()
 {
-  int region = CSettings::GetInstance().GetInt(CSettings::SETTING_BLURAY_PLAYERREGION);
+  int region = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_BLURAY_PLAYERREGION);
   if ( region != BLURAY_REGION_A
     && region != BLURAY_REGION_B
     && region != BLURAY_REGION_C)

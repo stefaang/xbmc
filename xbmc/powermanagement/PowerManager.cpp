@@ -24,6 +24,7 @@
 #include <memory>
 
 #include "Application.h"
+#include "ServiceBroker.h"
 #include "cores/AudioEngine/AEFactory.h"
 #include "dialogs/GUIDialogBusy.h"
 #include "dialogs/GUIDialogKaiToast.h"
@@ -127,7 +128,7 @@ void CPowerManager::Initialize()
 
 void CPowerManager::SetDefaults()
 {
-  int defaultShutdown = CSettings::GetInstance().GetInt(CSettings::SETTING_POWERMANAGEMENT_SHUTDOWNSTATE);
+  int defaultShutdown = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_POWERMANAGEMENT_SHUTDOWNSTATE);
 
   switch (defaultShutdown)
   {
@@ -166,7 +167,7 @@ void CPowerManager::SetDefaults()
     break;
   }
 
-  ((CSettingInt*)CSettings::GetInstance().GetSetting(CSettings::SETTING_POWERMANAGEMENT_SHUTDOWNSTATE))->SetDefault(defaultShutdown);
+  ((CSettingInt*)CServiceBroker::GetSettings().GetSetting(CSettings::SETTING_POWERMANAGEMENT_SHUTDOWNSTATE))->SetDefault(defaultShutdown);
 }
 
 bool CPowerManager::Powerdown()
@@ -256,6 +257,7 @@ void CPowerManager::OnSleep()
 #endif
 
   PVR::CPVRManager::GetInstance().SetWakeupCommand();
+  PVR::CPVRManager::GetInstance().OnSleep();
   g_application.SaveFileState(true);
   g_application.StopPlaying();
   g_application.StopShutdownTimer();
@@ -296,6 +298,7 @@ void CPowerManager::OnWake()
   g_application.UpdateLibraries();
   g_weatherManager.Refresh();
 
+  PVR::CPVRManager::GetInstance().OnWake();
   CAnnouncementManager::GetInstance().Announce(System, "xbmc", "OnWake");
 }
 

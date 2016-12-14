@@ -57,8 +57,10 @@
 #include "threads/Thread.h"
 #include "utils/ActorProtocol.h"
 #include "guilib/Geometry.h"
+#include <deque>
 #include <list>
 #include <map>
+#include <vector>
 
 extern "C" {
 #include "libavutil/avutil.h"
@@ -67,6 +69,8 @@ extern "C" {
 
 #define FULLHD_WIDTH                       1920
 #define MAX_PIC_Q_LENGTH                   20 //for non-interop_yuv this controls the max length of the decoded pic to render completion Q
+
+class CProcessInfo;
 
 namespace VDPAU
 {
@@ -133,7 +137,7 @@ public:
   uint64_t latency;         // time decoder has waited for a frame, ideally there is no latency
   int codecFlags;
   bool canSkipDeint;
-  int processCmd;
+  bool draining;
 
   void IncDecoded() { CSingleLock l(m_sec); decodedPics++;}
   void DecDecoded() { CSingleLock l(m_sec); decodedPics--;}
@@ -145,10 +149,10 @@ public:
   void Get(uint16_t &decoded, uint16_t &processed, uint16_t &render) {CSingleLock l(m_sec); decoded = decodedPics, processed=processedPics, render=renderPics;}
   void SetParams(uint64_t time, int flags) { CSingleLock l(m_sec); latency = time; codecFlags = flags; }
   void GetParams(uint64_t &lat, int &flags) { CSingleLock l(m_sec); lat = latency; flags = codecFlags; }
-  void SetCmd(int cmd) { CSingleLock l(m_sec); processCmd = cmd; }
-  void GetCmd(int &cmd) { CSingleLock l(m_sec); cmd = processCmd; processCmd = 0; }
   void SetCanSkipDeint(bool canSkip) { CSingleLock l(m_sec); canSkipDeint = canSkip; }
   bool CanSkipDeint() { CSingleLock l(m_sec); if (canSkipDeint) return true; else return false;}
+  void SetDraining(bool drain) { CSingleLock l(m_sec); draining = drain; }
+  bool IsDraining() { CSingleLock l(m_sec); if (draining) return true; else return false;}
 private:
   CCriticalSection m_sec;
 };
@@ -180,6 +184,7 @@ struct CVdpauConfig
   uint32_t maxReferences;
   bool useInteropYuv;
   CVDPAUContext *context;
+  CProcessInfo *processInfo;
 };
 
 /**
@@ -309,7 +314,7 @@ protected:
   void SetDeinterlacing();
   void SetHWUpscaling();
   void DisableHQScaling();
-  EINTERLACEMETHOD GetDeinterlacingMethod(bool log = false);
+  std::string GetDeintStrFromInterlaceMethod(EINTERLACEMETHOD method);
   bool CheckStatus(VdpStatus vdp_st, int line);
   CEvent m_outMsgEvent;
   CEvent *m_inMsgEvent;
@@ -328,7 +333,6 @@ protected:
   float m_Contrast;
   float m_NoiseReduction;
   float m_Sharpness;
-  int m_DeintMode;
   int m_Deint;
   int m_Upscale;
   bool m_SeenInterlaceFlag;
@@ -554,7 +558,7 @@ public:
     uint32_t aux; /* optional extra parameter... */
   };
 
-  CDecoder();
+  CDecoder(CProcessInfo& processInfo);
   virtual ~CDecoder();
 
   virtual bool Open      (AVCodecContext* avctx, AVCodecContext* mainctx, const enum AVPixelFormat, unsigned int surfaces = 0);
@@ -568,10 +572,9 @@ public:
 
   virtual int  Check(AVCodecContext* avctx);
   virtual const std::string Name() { return "vdpau"; }
+  virtual void SetCodecControl(int flags);
 
   bool Supports(VdpVideoMixerFeature feature);
-  bool Supports(EINTERLACEMETHOD method);
-  EINTERLACEMETHOD AutoInterlaceMethod();
   static bool IsVDPAUFormat(AVPixelFormat fmt);
 
   static void FFReleaseBuffer(void *opaque, uint8_t *data);
@@ -620,6 +623,7 @@ protected:
   CVdpauRenderPicture *m_presentPicture;
 
   int m_codecControl;
+  CProcessInfo& m_processInfo;
 };
 
 }

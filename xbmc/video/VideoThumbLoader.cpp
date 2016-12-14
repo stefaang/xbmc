@@ -25,6 +25,7 @@
 
 #include "cores/VideoPlayer/DVDFileInfo.h"
 #include "FileItem.h"
+#include "ServiceBroker.h"
 #include "filesystem/DirectoryCache.h"
 #include "filesystem/StackDirectory.h"
 #include "guilib/GUIWindowManager.h"
@@ -86,6 +87,9 @@ bool CThumbExtractor::operator==(const CJob* job) const
 bool CThumbExtractor::DoWork()
 {
   if (m_item.IsLiveTV()
+  // Due to a pvr addon api design flaw (no support for multiple concurrent streams
+  // per addon instance), pvr recording thumbnail extraction does not work (reliably).
+  ||  m_item.IsPVRRecording()
   ||  URIUtils::IsUPnP(m_item.GetPath())
   ||  URIUtils::IsBluray(m_item.GetPath())
   ||  m_item.IsBDFile()
@@ -131,7 +135,9 @@ bool CThumbExtractor::DoWork()
       }
     }
   }
-  else if (!m_item.HasVideoInfoTag() || !m_item.GetVideoInfoTag()->HasStreamDetails())
+  else if (!m_item.IsPlugin() &&
+           (!m_item.HasVideoInfoTag() ||
+           !m_item.GetVideoInfoTag()->HasStreamDetails()))
   {
     // No tag or no details set, so extract them
     CLog::Log(LOGDEBUG,"%s - trying to extract filestream details from video file %s", __FUNCTION__, CURL::GetRedacted(m_item.GetPath()).c_str());
@@ -386,8 +392,8 @@ bool CVideoThumbLoader::LoadItemLookup(CFileItem* pItem)
             m_videoDatabase->SetArtForItem(info->m_iDbId, info->m_type, "thumb", thumbURL);
         }
       }
-      else if (CSettings::GetInstance().GetBool(CSettings::SETTING_MYVIDEOS_EXTRACTTHUMB) &&
-               CSettings::GetInstance().GetBool(CSettings::SETTING_MYVIDEOS_EXTRACTFLAGS))
+      else if (CServiceBroker::GetSettings().GetBool(CSettings::SETTING_MYVIDEOS_EXTRACTTHUMB) &&
+               CServiceBroker::GetSettings().GetBool(CSettings::SETTING_MYVIDEOS_EXTRACTFLAGS))
       {
         CFileItem item(*pItem);
         std::string path(item.GetPath());
@@ -403,7 +409,7 @@ bool CVideoThumbLoader::LoadItemLookup(CFileItem* pItem)
     }
 
     // flag extraction
-    if (CSettings::GetInstance().GetBool(CSettings::SETTING_MYVIDEOS_EXTRACTFLAGS) &&
+    if (CServiceBroker::GetSettings().GetBool(CSettings::SETTING_MYVIDEOS_EXTRACTFLAGS) &&
        (!pItem->HasVideoInfoTag()                     ||
         !pItem->GetVideoInfoTag()->HasStreamDetails() ) )
     {
@@ -461,7 +467,7 @@ bool CVideoThumbLoader::FillLibraryArt(CFileItem &item)
     if (tag.m_type == MediaTypeEpisode || tag.m_type == MediaTypeSeason)
     {
       // For episodes and seasons, we want to set fanart for that of the show
-      if (!item.HasArt("fanart") && tag.m_iIdShow >= 0)
+      if (!item.HasArt("tvshow.fanart") && tag.m_iIdShow >= 0)
       {
         ArtCache::const_iterator i = m_showArt.find(tag.m_iIdShow);
         if (i == m_showArt.end())
@@ -524,7 +530,7 @@ std::string CVideoThumbLoader::GetLocalArt(const CFileItem &item, const std::str
      thumbloader thread accesses the streamed filesystem at the same time as the
      App thread and the latter has to wait for it.
    */
-  if (item.m_bIsFolder && (item.IsInternetStream(true) || g_advancedSettings.m_networkBufferMode == 1))
+  if (item.m_bIsFolder && (item.IsInternetStream(true) || g_advancedSettings.m_cacheBufferMode == CACHE_BUFFER_MODE_ALL))
   {
     CFileItemList items; // Dummy list
     CDirectory::GetDirectory(item.GetPath(), items, "", DIR_FLAG_NO_FILE_DIRS | DIR_FLAG_READ_CACHE | DIR_FLAG_NO_FILE_INFO);
@@ -620,7 +626,7 @@ void CVideoThumbLoader::DetectAndAddMissingItemData(CFileItem &item)
     m_videoDatabase->Close();
 
     // still empty, try grabbing from filename
-    // TODO: in case of too many false positives due to using the full path, extract the filename only using string utils
+    //! @todo in case of too many false positives due to using the full path, extract the filename only using string utils
     if (stereoMode.empty())
       stereoMode = CStereoscopicsManager::GetInstance().DetectStereoModeByString( path );
   }

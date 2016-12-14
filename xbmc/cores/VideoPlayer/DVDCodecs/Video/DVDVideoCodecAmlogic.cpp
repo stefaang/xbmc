@@ -24,9 +24,13 @@
 #include "DVDClock.h"
 #include "DVDStreamInfo.h"
 #include "AMLCodec.h"
+#include "ServiceBroker.h"
 #include "utils/AMLUtils.h"
 #include "utils/BitstreamConverter.h"
 #include "utils/log.h"
+#include "utils/SysfsUtils.h"
+#include "threads/Atomics.h"
+#include "settings/Settings.h"
 
 #define __MODULE_NAME__ "DVDVideoCodecAmlogic"
 
@@ -37,7 +41,7 @@ typedef struct frame_queue {
   struct frame_queue *nextframe;
 } frame_queue;
 
-CDVDVideoCodecAmlogic::CDVDVideoCodecAmlogic() :
+CDVDVideoCodecAmlogic::CDVDVideoCodecAmlogic(CProcessInfo &processInfo) : CDVDVideoCodec(processInfo),
   m_Codec(NULL),
   m_pFormatName("amcodec"),
   m_last_pts(0.0),
@@ -47,7 +51,9 @@ CDVDVideoCodecAmlogic::CDVDVideoCodecAmlogic() :
   m_video_rate(0),
   m_mpeg2_sequence(NULL),
   m_bitparser(NULL),
-  m_bitstream(NULL)
+  m_bitstream(NULL),
+  m_opened(false),
+  m_drop(false)
 {
   pthread_mutex_init(&m_queue_mutex, NULL);
 }
@@ -60,6 +66,11 @@ CDVDVideoCodecAmlogic::~CDVDVideoCodecAmlogic()
 
 bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 {
+  if (!CServiceBroker::GetSettings().GetBool(CSettings::SETTING_VIDEOPLAYER_USEAMCODEC))
+    return false;
+  if (hints.stills)
+    return false;
+
   if (!aml_permissions())
   {
     CLog::Log(LOGERROR, "AML: no proper permission, please contact the device vendor. Skipping codec...");
@@ -76,21 +87,34 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
     case AV_CODEC_ID_MPEG1VIDEO:
     case AV_CODEC_ID_MPEG2VIDEO:
     case AV_CODEC_ID_MPEG2VIDEO_XVMC:
+      if (m_hints.width <= CServiceBroker::GetSettings().GetInt(CSettings::SETTING_VIDEOPLAYER_USEAMCODECMPEG2))
+        return false;
       m_mpeg2_sequence_pts = 0;
       m_mpeg2_sequence = new mpeg2_sequence;
       m_mpeg2_sequence->width  = m_hints.width;
       m_mpeg2_sequence->height = m_hints.height;
       m_mpeg2_sequence->ratio  = m_hints.aspect;
-      if (m_hints.rfpsrate > 0 && m_hints.rfpsscale != 0)
-        m_mpeg2_sequence->rate = (float)m_hints.rfpsrate / m_hints.rfpsscale;
-      else if (m_hints.fpsrate > 0 && m_hints.fpsscale != 0)
+      if (m_hints.fpsrate > 0 && m_hints.fpsscale != 0)
         m_mpeg2_sequence->rate = (float)m_hints.fpsrate / m_hints.fpsscale;
       else
         m_mpeg2_sequence->rate = 1.0;
       m_pFormatName = "am-mpeg2";
       break;
     case AV_CODEC_ID_H264:
-      if ((!aml_support_h264_4k2k()) && ((m_hints.width > 1920) || (m_hints.height > 1088)))
+      if (m_hints.width <= CServiceBroker::GetSettings().GetInt(CSettings::SETTING_VIDEOPLAYER_USEAMCODECH264))
+        return false;
+      switch(hints.profile)
+      {
+        case FF_PROFILE_H264_HIGH_10:
+        case FF_PROFILE_H264_HIGH_10_INTRA:
+        case FF_PROFILE_H264_HIGH_422:
+        case FF_PROFILE_H264_HIGH_422_INTRA:
+        case FF_PROFILE_H264_HIGH_444_PREDICTIVE:
+        case FF_PROFILE_H264_HIGH_444_INTRA:
+        case FF_PROFILE_H264_CAVLC_444:
+          return false;
+      }
+      if ((aml_support_h264_4k2k() == AML_NO_H264_4K2K) && ((m_hints.width > 1920) || (m_hints.height > 1088)))
       {
         // 4K is supported only on Amlogic S802/S812 chip
         return false;
@@ -114,6 +138,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
     case AV_CODEC_ID_MPEG4:
     case AV_CODEC_ID_MSMPEG4V2:
     case AV_CODEC_ID_MSMPEG4V3:
+      if (m_hints.width <= CServiceBroker::GetSettings().GetInt(CSettings::SETTING_VIDEOPLAYER_USEAMCODECMPEG4))
+        return false;
       m_pFormatName = "am-mpeg4";
       break;
     case AV_CODEC_ID_H263:
@@ -154,6 +180,10 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
         // HEVC supported only on S805 and S812.
         return false;
       }
+      if ((hints.profile == FF_PROFILE_HEVC_MAIN_10) && !aml_support_hevc_10bit())
+      {
+        return false;
+      }
       m_pFormatName = "am-h265";
       m_bitstream = new CBitstreamConverter();
       m_bitstream->Open(m_hints.codec, (uint8_t*)m_hints.extradata, m_hints.extrasize, true);
@@ -190,19 +220,23 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
   m_videobuffer.iFlags  = DVP_FLAG_ALLOCATED;
   m_videobuffer.iWidth  = m_hints.width;
   m_videobuffer.iHeight = m_hints.height;
-  m_videobuffer.amlcodec = m_Codec;
+  m_videobuffer.amlcodec = NULL;
 
   m_videobuffer.iDisplayWidth  = m_videobuffer.iWidth;
   m_videobuffer.iDisplayHeight = m_videobuffer.iHeight;
   if (m_hints.aspect > 0.0 && !m_hints.forced_aspect)
   {
-    m_videobuffer.iDisplayWidth  = ((int)lrint(m_videobuffer.iHeight * m_hints.aspect)) & -3;
+    m_videobuffer.iDisplayWidth  = ((int)lrint(m_videobuffer.iHeight * m_hints.aspect)) & ~3;
     if (m_videobuffer.iDisplayWidth > m_videobuffer.iWidth)
     {
       m_videobuffer.iDisplayWidth  = m_videobuffer.iWidth;
-      m_videobuffer.iDisplayHeight = ((int)lrint(m_videobuffer.iWidth / m_hints.aspect)) & -3;
+      m_videobuffer.iDisplayHeight = ((int)lrint(m_videobuffer.iWidth / m_hints.aspect)) & ~3;
     }
   }
+
+  m_processInfo.SetVideoDecoderName(m_pFormatName, true);
+  m_processInfo.SetVideoDimensions(m_hints.width, m_hints.height);
+  m_processInfo.SetVideoDeintMethod("hardware");
 
   CLog::Log(LOGINFO, "%s: Opened Amlogic Codec", __MODULE_NAME__);
   return true;
@@ -210,6 +244,12 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
 
 void CDVDVideoCodecAmlogic::Dispose(void)
 {
+  {
+    CSingleLock lock(m_secure);
+    for (std::set<CDVDAmlogicInfo*>::iterator it = m_inflight.begin(); it != m_inflight.end(); ++it)
+      (*it)->invalidate();
+  }
+
   if (m_Codec)
     m_Codec->CloseDecoder(), delete m_Codec, m_Codec = NULL;
   if (m_videobuffer.iFlags)
@@ -276,6 +316,15 @@ bool CDVDVideoCodecAmlogic::GetPicture(DVDVideoPicture* pDvdVideoPicture)
     m_Codec->GetPicture(&m_videobuffer);
   *pDvdVideoPicture = m_videobuffer;
 
+  CDVDAmlogicInfo* info = new CDVDAmlogicInfo(this, m_Codec, m_Codec->GetOMXPts());
+
+  {
+    CSingleLock lock(m_secure);
+    m_inflight.insert(info);
+  }
+
+  pDvdVideoPicture->amlcodec = info->Retain();
+
   // check for mpeg2 aspect ratio changes
   if (m_mpeg2_sequence && pDvdVideoPicture->pts >= m_mpeg2_sequence_pts)
     m_aspect_ratio = m_mpeg2_sequence->ratio;
@@ -284,19 +333,38 @@ bool CDVDVideoCodecAmlogic::GetPicture(DVDVideoPicture* pDvdVideoPicture)
   pDvdVideoPicture->iDisplayHeight = pDvdVideoPicture->iHeight;
   if (m_aspect_ratio > 1.0 && !m_hints.forced_aspect)
   {
-    pDvdVideoPicture->iDisplayWidth  = ((int)lrint(pDvdVideoPicture->iHeight * m_aspect_ratio)) & -3;
+    pDvdVideoPicture->iDisplayWidth  = ((int)lrint(pDvdVideoPicture->iHeight * m_aspect_ratio)) & ~3;
     if (pDvdVideoPicture->iDisplayWidth > pDvdVideoPicture->iWidth)
     {
       pDvdVideoPicture->iDisplayWidth  = pDvdVideoPicture->iWidth;
-      pDvdVideoPicture->iDisplayHeight = ((int)lrint(pDvdVideoPicture->iWidth / m_aspect_ratio)) & -3;
+      pDvdVideoPicture->iDisplayHeight = ((int)lrint(pDvdVideoPicture->iWidth / m_aspect_ratio)) & ~3;
     }
   }
 
   return true;
 }
 
+bool CDVDVideoCodecAmlogic::ClearPicture(DVDVideoPicture *pDvdVideoPicture)
+{
+  SAFE_RELEASE(pDvdVideoPicture->amlcodec);
+  return true;
+}
+
 void CDVDVideoCodecAmlogic::SetDropState(bool bDrop)
 {
+  if (bDrop == m_drop)
+    return;
+
+  m_drop = bDrop;
+  if (bDrop)
+    m_videobuffer.iFlags |=  DVP_FLAG_DROPPED;
+  else
+    m_videobuffer.iFlags &= ~DVP_FLAG_DROPPED;
+
+  // Freerun mode causes amvideo driver to ignore timing and process frames
+  // as quickly as they are coming from decoder. By enabling freerun mode we can
+  // skip rendering of the frames that are requested to be dropped by VideoPlayer.
+  SysfsUtils::SetInt("/sys/class/video/freerun_mode", bDrop ? 1 : 0);
 }
 
 void CDVDVideoCodecAmlogic::SetSpeed(int iSpeed)
@@ -407,43 +475,41 @@ void CDVDVideoCodecAmlogic::FrameRateTracking(uint8_t *pData, int iSize, double 
       {
         default:
         case 0x01:
-          m_hints.rfpsrate = 24000.0;
-          m_hints.rfpsscale = 1001.0;
+          m_hints.fpsrate = 24000.0;
+          m_hints.fpsscale = 1001.0;
           break;
         case 0x02:
-          m_hints.rfpsrate = 24000.0;
-          m_hints.rfpsscale = 1000.0;
+          m_hints.fpsrate = 24000.0;
+          m_hints.fpsscale = 1000.0;
           break;
         case 0x03:
-          m_hints.rfpsrate = 25000.0;
-          m_hints.rfpsscale = 1000.0;
+          m_hints.fpsrate = 25000.0;
+          m_hints.fpsscale = 1000.0;
           break;
         case 0x04:
-          m_hints.rfpsrate = 30000.0;
-          m_hints.rfpsscale = 1001.0;
+          m_hints.fpsrate = 30000.0;
+          m_hints.fpsscale = 1001.0;
           break;
         case 0x05:
-          m_hints.rfpsrate = 30000.0;
-          m_hints.rfpsscale = 1000.0;
+          m_hints.fpsrate = 30000.0;
+          m_hints.fpsscale = 1000.0;
           break;
         case 0x06:
-          m_hints.rfpsrate = 50000.0;
-          m_hints.rfpsscale = 1000.0;
+          m_hints.fpsrate = 50000.0;
+          m_hints.fpsscale = 1000.0;
           break;
         case 0x07:
-          m_hints.rfpsrate = 60000.0;
-          m_hints.rfpsscale = 1001.0;
+          m_hints.fpsrate = 60000.0;
+          m_hints.fpsscale = 1001.0;
           break;
         case 0x08:
-          m_hints.rfpsrate = 60000.0;
-          m_hints.rfpsscale = 1000.0;
+          m_hints.fpsrate = 60000.0;
+          m_hints.fpsscale = 1000.0;
           break;
       }
       m_hints.width    = m_mpeg2_sequence->width;
       m_hints.height   = m_mpeg2_sequence->height;
       m_hints.aspect   = m_mpeg2_sequence->ratio;
-      m_hints.fpsrate  = m_hints.rfpsrate;
-      m_hints.fpsscale = m_hints.rfpsscale;
     }
     return;
   }
@@ -535,3 +601,52 @@ void CDVDVideoCodecAmlogic::FrameRateTracking(uint8_t *pData, int iSize, double 
     FrameQueuePop();
   }
 }
+
+void CDVDVideoCodecAmlogic::RemoveInfo(CDVDAmlogicInfo *info)
+{
+  CSingleLock lock(m_secure);
+  m_inflight.erase(m_inflight.find(info));
+}
+
+CDVDAmlogicInfo::CDVDAmlogicInfo(CDVDVideoCodecAmlogic *codec, CAMLCodec *amlcodec, int omxPts)
+  : m_refs(0)
+  , m_codec(codec)
+  , m_amlCodec(amlcodec)
+  , m_omxPts(omxPts)
+{
+}
+
+CDVDAmlogicInfo *CDVDAmlogicInfo::Retain()
+{
+  AtomicIncrement(&m_refs);
+  return this;
+}
+
+long CDVDAmlogicInfo::Release()
+{
+  long count = AtomicDecrement(&m_refs);
+  if (count == 0)
+  {
+    if (m_codec)
+      m_codec->RemoveInfo(this);
+    delete this;
+  }
+
+  return count;
+}
+
+CAMLCodec *CDVDAmlogicInfo::getAmlCodec() const
+{
+  CSingleLock lock(m_section);
+
+  return m_amlCodec;
+}
+
+void CDVDAmlogicInfo::invalidate()
+{
+  CSingleLock lock(m_section);
+
+  m_codec = NULL;
+  m_amlCodec = NULL;
+}
+

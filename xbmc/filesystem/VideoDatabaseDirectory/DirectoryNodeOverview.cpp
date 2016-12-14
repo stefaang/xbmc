@@ -1,6 +1,6 @@
 /*
- *      Copyright (C) 2005-2013 Team XBMC
- *      http://xbmc.org
+ *      Copyright (C) 2016 Team Kodi
+ *      http://kodi.tv
  *
  *  This Program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License
- *  along with XBMC; see the file COPYING.  If not, see
+ *  along with Kodi; see the file COPYING.  If not, see
  *  <http://www.gnu.org/licenses/>.
  *
  */
@@ -23,6 +23,7 @@
 #include <utility>
 
 #include "FileItem.h"
+#include "ServiceBroker.h"
 #include "guilib/LocalizeStrings.h"
 #include "settings/Settings.h"
 #include "video/VideoDatabase.h"
@@ -36,6 +37,7 @@ Node OverviewChildren[] = {
                             { NODE_TYPE_RECENTLY_ADDED_MOVIES,      "recentlyaddedmovies",      20386 },
                             { NODE_TYPE_RECENTLY_ADDED_EPISODES,    "recentlyaddedepisodes",    20387 },
                             { NODE_TYPE_RECENTLY_ADDED_MUSICVIDEOS, "recentlyaddedmusicvideos", 20390 },
+                            { NODE_TYPE_INPROGRESS_TVSHOWS,         "inprogresstvshows",        626 },
                           };
 
 CDirectoryNodeOverview::CDirectoryNodeOverview(const std::string& strName, CDirectoryNode* pParent)
@@ -71,21 +73,21 @@ bool CDirectoryNodeOverview::GetContent(CFileItemList& items) const
   std::vector<std::pair<const char*, int> > vec;
   if (hasMovies)
   {
-    if (CSettings::GetInstance().GetBool(CSettings::SETTING_MYVIDEOS_FLATTEN))
+    if (CServiceBroker::GetSettings().GetBool(CSettings::SETTING_MYVIDEOS_FLATTEN))
       vec.push_back(std::make_pair("movies/titles", 342));
     else
       vec.push_back(std::make_pair("movies", 342));   // Movies
   }
   if (hasTvShows)
   {
-    if (CSettings::GetInstance().GetBool(CSettings::SETTING_MYVIDEOS_FLATTEN))
+    if (CServiceBroker::GetSettings().GetBool(CSettings::SETTING_MYVIDEOS_FLATTEN))
       vec.push_back(std::make_pair("tvshows/titles", 20343));
     else
       vec.push_back(std::make_pair("tvshows", 20343)); // TV Shows
   }
   if (hasMusicVideos)
   {
-    if (CSettings::GetInstance().GetBool(CSettings::SETTING_MYVIDEOS_FLATTEN))
+    if (CServiceBroker::GetSettings().GetBool(CSettings::SETTING_MYVIDEOS_FLATTEN))
       vec.push_back(std::make_pair("musicvideos/titles", 20389));
     else
       vec.push_back(std::make_pair("musicvideos", 20389)); // Music Videos
@@ -94,7 +96,10 @@ bool CDirectoryNodeOverview::GetContent(CFileItemList& items) const
     if (hasMovies)
       vec.push_back(std::make_pair("recentlyaddedmovies", 20386));  // Recently Added Movies
     if (hasTvShows)
+    {
       vec.push_back(std::make_pair("recentlyaddedepisodes", 20387)); // Recently Added Episodes
+      vec.push_back(std::make_pair("inprogresstvshows", 626)); // InProgress TvShows
+    }
     if (hasMusicVideos)
       vec.push_back(std::make_pair("recentlyaddedmusicvideos", 20390)); // Recently Added Music Videos
   }

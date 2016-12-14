@@ -171,6 +171,7 @@ public:
   std::string GetVideoThumbFolder() const;
   std::string GetBookmarksThumbFolder() const;
   std::string GetLibraryFolder() const;
+  std::string GetSavestatesFolder() const;
   std::string GetSettingsFile() const;
 
   // uses HasSlashAtEnd to determine if a directory or file was meant
@@ -190,6 +191,7 @@ private:
 
   std::vector<CProfile> m_profiles;
   bool m_usingLoginScreen;
+  bool m_profileLoadedForLogin;
   int m_autoLoginProfile;
   uint32_t m_lastUsedProfile;
   uint32_t m_currentProfile; // do not modify directly, use SetCurrentProfileId() function instead

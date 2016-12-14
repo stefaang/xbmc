@@ -29,6 +29,7 @@
 #include "addons/AddonManager.h"
 #include "addons/GUIDialogAddonSettings.h"
 #include "Application.h"
+#include "ServiceBroker.h"
 #include "filesystem/Directory.h"
 #include "filesystem/ZipManager.h"
 #include "guilib/GUIWindowManager.h"
@@ -47,6 +48,9 @@
 #include "utils/Temperature.h"
 #include "XBDateTime.h"
 #include "XMLUtils.h"
+#ifdef TARGET_POSIX
+#include "linux/XTimeUtils.h"
+#endif
 
 using namespace ADDON;
 using namespace XFILE;
@@ -79,7 +83,7 @@ bool CWeatherJob::DoWork()
     return false;
 
   AddonPtr addon;
-  if (!ADDON::CAddonMgr::GetInstance().GetAddon(CSettings::GetInstance().GetString(CSettings::SETTING_WEATHER_ADDON), addon, ADDON_SCRIPT_WEATHER))
+  if (!ADDON::CAddonMgr::GetInstance().GetAddon(CServiceBroker::GetSettings().GetString(CSettings::SETTING_WEATHER_ADDON), addon, ADDON_SCRIPT_WEATHER))
     return false;
 
   // initialize our sys.argv variables
@@ -145,7 +149,7 @@ void CWeatherJob::LocalizeOverview(std::string &str)
   str = StringUtils::Join(words, " ");
 }
 
-void CWeatherJob::FormatTemperature(std::string &text, int temp)
+void CWeatherJob::FormatTemperature(std::string &text, double temp)
 {
   CTemperature temperature = CTemperature::CreateFromCelsius(temp);
   text = StringUtils::Format("%.0f", temperature.To(g_langInfo.GetTemperatureUnit()));
@@ -155,7 +159,7 @@ void CWeatherJob::LoadLocalizedToken()
 {
   // We load the english strings in to get our tokens
   std::string language = LANGUAGE_DEFAULT;
-  CSettingString* languageSetting = static_cast<CSettingString*>(CSettings::GetInstance().GetSetting(CSettings::SETTING_LOCALE_LANGUAGE));
+  CSettingString* languageSetting = static_cast<CSettingString*>(CServiceBroker::GetSettings().GetSetting(CSettings::SETTING_LOCALE_LANGUAGE));
   if (languageSetting != NULL)
     language = languageSetting->GetDefault();
 
@@ -259,9 +263,9 @@ void CWeatherJob::SetFromProperties()
     m_info.currentIcon = ConstructPath(window->GetProperty("Current.OutlookIcon").asString());
     LocalizeOverview(m_info.currentConditions);
     FormatTemperature(m_info.currentTemperature,
-        strtol(window->GetProperty("Current.Temperature").asString().c_str(),0,10));
+        strtod(window->GetProperty("Current.Temperature").asString().c_str(), nullptr));
     FormatTemperature(m_info.currentFeelsLike,
-        strtol(window->GetProperty("Current.FeelsLike").asString().c_str(),0,10));
+        strtod(window->GetProperty("Current.FeelsLike").asString().c_str(), nullptr));
     m_info.currentUVIndex = window->GetProperty("Current.UVIndex").asString();
     LocalizeOverview(m_info.currentUVIndex);
     CSpeed speed = CSpeed::CreateFromKilometresPerHour(strtol(window->GetProperty("Current.Wind").asString().c_str(),0,10));
@@ -277,7 +281,7 @@ void CWeatherJob::SetFromProperties()
     std::string windspeed = StringUtils::Format("%i %s", (int)speed.To(g_langInfo.GetSpeedUnit()), g_langInfo.GetSpeedUnitString().c_str());
     window->SetProperty("Current.WindSpeed",windspeed);
     FormatTemperature(m_info.currentDewPoint,
-        strtol(window->GetProperty("Current.DewPoint").asString().c_str(),0,10));
+        strtod(window->GetProperty("Current.DewPoint").asString().c_str(), nullptr));
     if (window->GetProperty("Current.Humidity").asString().empty())
       m_info.currentHumidity.clear();
     else
@@ -290,10 +294,10 @@ void CWeatherJob::SetFromProperties()
       LocalizeOverviewToken(m_info.forecast[i].m_day);
       strDay = StringUtils::Format("Day%i.HighTemp",i);
       FormatTemperature(m_info.forecast[i].m_high,
-                    strtol(window->GetProperty(strDay).asString().c_str(),0,10));
+                    strtod(window->GetProperty(strDay).asString().c_str(), nullptr));
       strDay = StringUtils::Format("Day%i.LowTemp",i);
       FormatTemperature(m_info.forecast[i].m_low,
-                    strtol(window->GetProperty(strDay).asString().c_str(),0,10));
+                    strtod(window->GetProperty(strDay).asString().c_str(), nullptr));
       strDay = StringUtils::Format("Day%i.OutlookIcon",i);
       m_info.forecast[i].m_icon = ConstructPath(window->GetProperty(strDay).asString());
       strDay = StringUtils::Format("Day%i.Outlook",i);
@@ -374,8 +378,8 @@ const day_forecast &CWeather::GetForecast(int day) const
  */
 void CWeather::SetArea(int iLocation)
 {
-  CSettings::GetInstance().SetInt(CSettings::SETTING_WEATHER_CURRENTLOCATION, iLocation);
-  CSettings::GetInstance().Save();
+  CServiceBroker::GetSettings().SetInt(CSettings::SETTING_WEATHER_CURRENTLOCATION, iLocation);
+  CServiceBroker::GetSettings().Save();
 }
 
 /*!
@@ -384,7 +388,7 @@ void CWeather::SetArea(int iLocation)
  */
 int CWeather::GetArea() const
 {
-  return CSettings::GetInstance().GetInt(CSettings::SETTING_WEATHER_CURRENTLOCATION);
+  return CServiceBroker::GetSettings().GetInt(CSettings::SETTING_WEATHER_CURRENTLOCATION);
 }
 
 CJob *CWeather::GetJob() const
@@ -422,8 +426,8 @@ void CWeather::OnSettingAction(const CSetting *setting)
   if (settingId == CSettings::SETTING_WEATHER_ADDONSETTINGS)
   {
     AddonPtr addon;
-    if (CAddonMgr::GetInstance().GetAddon(CSettings::GetInstance().GetString(CSettings::SETTING_WEATHER_ADDON), addon, ADDON_SCRIPT_WEATHER) && addon != NULL)
-    { // TODO: maybe have ShowAndGetInput return a bool if settings changed, then only reset weather if true.
+    if (CAddonMgr::GetInstance().GetAddon(CServiceBroker::GetSettings().GetString(CSettings::SETTING_WEATHER_ADDON), addon, ADDON_SCRIPT_WEATHER) && addon != NULL)
+    { //! @todo maybe have ShowAndGetInput return a bool if settings changed, then only reset weather if true.
       CGUIDialogAddonSettings::ShowAndGetInput(addon);
       Refresh();
     }

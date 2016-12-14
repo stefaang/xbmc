@@ -19,6 +19,7 @@
  */
 
 #include "FileItem.h"
+#include "ServiceBroker.h"
 #include "dialogs/GUIDialogFileBrowser.h"
 #include "dialogs/GUIDialogOK.h"
 #include "dialogs/GUIDialogProgress.h"
@@ -128,7 +129,7 @@ bool CGUIDialogPVRChannelManager::OnActionMove(const CAction &action)
           bMoveUp = !bMoveUp;
           iLines  = m_channelItems->Size() - 1;
         }
-        for (unsigned int iLine = 0; iLine < iLines; iLine++)
+        for (unsigned int iLine = 0; iLine < iLines; ++iLine)
         {
           unsigned int iNewSelect = bMoveUp ? m_iSelected - 1 : m_iSelected + 1;
           if (m_channelItems->Get(iNewSelect)->GetProperty("Number").asString() != "-")
@@ -363,10 +364,10 @@ bool CGUIDialogPVRChannelManager::OnClickButtonChannelLogo(CGUIMessage &message)
 
   std::string strThumb;
   VECSOURCES shares;
-  if (CSettings::GetInstance().GetString(CSettings::SETTING_PVRMENU_ICONPATH) != "")
+  if (CServiceBroker::GetSettings().GetString(CSettings::SETTING_PVRMENU_ICONPATH) != "")
   {
     CMediaSource share1;
-    share1.strPath = CSettings::GetInstance().GetString(CSettings::SETTING_PVRMENU_ICONPATH);
+    share1.strPath = CServiceBroker::GetSettings().GetString(CSettings::SETTING_PVRMENU_ICONPATH);
     share1.strName = g_localizeStrings.Get(19066);
     shares.push_back(share1);
   }
@@ -409,7 +410,7 @@ bool CGUIDialogPVRChannelManager::OnClickButtonUseEPG(CGUIMessage &message)
 
 bool CGUIDialogPVRChannelManager::OnClickEPGSourceSpin(CGUIMessage &message)
 {
-  // TODO: Add EPG scraper support
+  //! @todo Add EPG scraper support
   return true;
 //  CGUISpinControlEx *pSpin = (CGUISpinControlEx *)GetControl(SPIN_EPGSOURCE_SELECTION);
 //  if (pSpin)
@@ -444,7 +445,7 @@ bool CGUIDialogPVRChannelManager::OnClickButtonGroupManager(CGUIMessage &message
 bool CGUIDialogPVRChannelManager::OnClickButtonNewChannel()
 {
   int iSelection = 0;
-  if (g_PVRClients->ConnectedClientAmount() > 1)
+  if (g_PVRClients->CreatedClientAmount() > 1)
   {
     CGUIDialogSelect* pDlgSelect = (CGUIDialogSelect*)g_windowManager.GetWindow(WINDOW_DIALOG_SELECT);
     if (!pDlgSelect)
@@ -452,12 +453,11 @@ bool CGUIDialogPVRChannelManager::OnClickButtonNewChannel()
 
     pDlgSelect->SetHeading(CVariant{19213}); // Select Client
 
-    PVR_CLIENT_ITR itr;
-    for (itr = m_clientsWithSettingsList.begin() ; itr != m_clientsWithSettingsList.end(); ++itr)
-      pDlgSelect->Add((*itr)->Name());
+    for (const auto client : m_clientsWithSettingsList)
+      pDlgSelect->Add(client->Name());
     pDlgSelect->Open();
 
-    iSelection = pDlgSelect->GetSelectedLabel();
+    iSelection = pDlgSelect->GetSelectedItem();
   }
 
   if (iSelection >= 0 && iSelection < (int)m_clientsWithSettingsList.size())
@@ -669,9 +669,9 @@ void CGUIDialogPVRChannelManager::Update()
 
   std::vector<PVRChannelGroupMember> groupMembers(channels->GetMembers());
   CFileItemPtr channelFile;
-  for (std::vector<PVRChannelGroupMember>::const_iterator it = groupMembers.begin(); it != groupMembers.end(); ++it)
+  for (const auto &member : groupMembers)
   {
-    channelFile = CFileItemPtr(new CFileItem((*it).channel));
+    channelFile = CFileItemPtr(new CFileItem(member.channel));
     if (!channelFile || !channelFile->HasPVRChannelInfoTag())
       continue;
     const CPVRChannelPtr channel(channelFile->GetPVRChannelInfoTag());
@@ -695,7 +695,7 @@ void CGUIDialogPVRChannelManager::Update()
   {
     std::vector< std::pair<std::string, int> > labels;
     labels.push_back(std::make_pair(g_localizeStrings.Get(19210), 0));
-    /// TODO: Add Labels for EPG scrapers here
+    //! @todo Add Labels for EPG scrapers here
     SET_CONTROL_LABELS(SPIN_EPGSOURCE_SELECTION, 0, &labels);
   }
 
@@ -721,7 +721,7 @@ void CGUIDialogPVRChannelManager::Clear(void)
   m_channelItems->Clear();
 }
 
-void CGUIDialogPVRChannelManager::RenameChannel(CFileItemPtr pItem)
+void CGUIDialogPVRChannelManager::RenameChannel(const CFileItemPtr &pItem)
 {
   std::string strChannelName = pItem->GetProperty("Name").asString();
   if (strChannelName != pItem->GetPVRChannelInfoTag()->ChannelName())
@@ -734,7 +734,7 @@ void CGUIDialogPVRChannelManager::RenameChannel(CFileItemPtr pItem)
   }
 }
 
-bool CGUIDialogPVRChannelManager::PersistChannel(CFileItemPtr pItem, CPVRChannelGroupPtr group, unsigned int *iChannelNumber)
+bool CGUIDialogPVRChannelManager::PersistChannel(const CFileItemPtr &pItem, const CPVRChannelGroupPtr &group, unsigned int *iChannelNumber)
 {
   if (!pItem || !pItem->HasPVRChannelInfoTag() || !group)
     return false;
@@ -773,7 +773,7 @@ void CGUIDialogPVRChannelManager::SaveList(void)
   if (!group)
     return;
 
-  for (int iListPtr = 0; iListPtr < m_channelItems->Size(); iListPtr++)
+  for (int iListPtr = 0; iListPtr < m_channelItems->Size(); ++iListPtr)
   {
     CFileItemPtr pItem = m_channelItems->Get(iListPtr);
 
@@ -797,7 +797,7 @@ void CGUIDialogPVRChannelManager::SaveList(void)
 
 void CGUIDialogPVRChannelManager::SetItemsUnchanged(void)
 {
-  for (int iItemPtr = 0; iItemPtr < m_channelItems->Size(); iItemPtr++)
+  for (int iItemPtr = 0; iItemPtr < m_channelItems->Size(); ++iItemPtr)
   {
     CFileItemPtr pItem = m_channelItems->Get(iItemPtr);
     if (pItem)
@@ -810,7 +810,7 @@ void CGUIDialogPVRChannelManager::Renumber(void)
   int iNextChannelNumber(0);
   std::string strNumber;
   CFileItemPtr pItem;
-  for (int iChannelPtr = 0; iChannelPtr < m_channelItems->Size(); iChannelPtr++)
+  for (int iChannelPtr = 0; iChannelPtr < m_channelItems->Size(); ++iChannelPtr)
   {
     pItem = m_channelItems->Get(iChannelPtr);
     if (pItem->GetProperty("ActiveChannel").asBoolean())

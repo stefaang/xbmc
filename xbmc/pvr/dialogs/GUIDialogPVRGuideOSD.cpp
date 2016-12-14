@@ -24,9 +24,9 @@
 #include "input/Key.h"
 #include "view/ViewState.h"
 
+#include "pvr/PVRGUIActions.h"
 #include "pvr/PVRManager.h"
 
-#include "GUIDialogPVRGuideInfo.h"
 #include "GUIDialogPVRGuideOSD.h"
 
 using namespace PVR;
@@ -96,7 +96,7 @@ void CGUIDialogPVRGuideOSD::OnInitWindow()
 
   // select the active entry
   unsigned int iSelectedItem = 0;
-  for (int iEpgPtr = 0; iEpgPtr < m_vecItems->Size(); iEpgPtr++)
+  for (int iEpgPtr = 0; iEpgPtr < m_vecItems->Size(); ++iEpgPtr)
   {
     CFileItemPtr entry = m_vecItems->Get(iEpgPtr);
     if (entry->HasEPGInfoTag() && entry->GetEPGInfoTag()->IsActive())
@@ -122,19 +122,10 @@ void CGUIDialogPVRGuideOSD::Clear()
 
 void CGUIDialogPVRGuideOSD::ShowInfo(int item)
 {
-  /* Check file item is in list range and get his pointer */
-  if (item < 0 || item >= (int)m_vecItems->Size()) return;
-
-  CFileItemPtr pItem = m_vecItems->Get(item);
-
-  /* Load programme info dialog */
-  CGUIDialogPVRGuideInfo* pDlgInfo = (CGUIDialogPVRGuideInfo*)g_windowManager.GetWindow(WINDOW_DIALOG_PVR_GUIDE_INFO);
-  if (!pDlgInfo)
+  if (item < 0 || item >= (int)m_vecItems->Size())
     return;
 
-  /* inform dialog about the file item and open dialog window */
-  pDlgInfo->SetProgInfo(pItem.get());
-  pDlgInfo->Open();
+  CPVRGUIActions::GetInstance().ShowEPGInfo(m_vecItems->Get(item));
 }
 
 void CGUIDialogPVRGuideOSD::OnWindowLoaded()

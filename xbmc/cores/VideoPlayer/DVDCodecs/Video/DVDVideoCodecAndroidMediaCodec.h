@@ -20,6 +20,8 @@
  *
  */
 
+#include "system.h"
+
 #include <queue>
 #include <vector>
 #include <memory>
@@ -28,7 +30,7 @@
 #include "DVDStreamInfo.h"
 #include "threads/Thread.h"
 #include "threads/SingleLock.h"
-#include "android/jni/Surface.h"
+#include "platform/android/jni/Surface.h"
 #include "guilib/Geometry.h"
 
 class CJNISurface;
@@ -61,10 +63,12 @@ public:
 
   // meat and potatos
   void                Validate(bool state);
+  bool                WaitForFrame(int millis);
   // MediaCodec related
   void                ReleaseOutputBuffer(bool render);
+  bool                IsReleased() { return m_isReleased; }
   // SurfaceTexture released
-  int                 GetIndex() const;
+  ssize_t             GetIndex() const;
   int                 GetTextureID() const;
   void                GetTransformMatrix(float *textureMatrix);
   void                UpdateTexImage();
@@ -91,23 +95,24 @@ private:
 class CDVDVideoCodecAndroidMediaCodec : public CDVDVideoCodec
 {
 public:
-  CDVDVideoCodecAndroidMediaCodec(bool surface_render = false);
+  CDVDVideoCodecAndroidMediaCodec(CProcessInfo &processInfo, bool surface_render = false);
   virtual ~CDVDVideoCodecAndroidMediaCodec();
 
   // required overrides
   virtual bool    Open(CDVDStreamInfo &hints, CDVDCodecOptions &options);
-  virtual void    Dispose();
   virtual int     Decode(uint8_t *pData, int iSize, double dts, double pts);
   virtual void    Reset();
   virtual bool    GetPicture(DVDVideoPicture *pDvdVideoPicture);
   virtual bool    ClearPicture(DVDVideoPicture* pDvdVideoPicture);
   virtual void    SetDropState(bool bDrop);
+  virtual void    SetCodecControl(int flags);
   virtual int     GetDataSize(void);
   virtual double  GetTimeSize(void);
   virtual const char* GetName(void) { return m_formatname.c_str(); }
   virtual unsigned GetAllowedReferences();
 
 protected:
+  void            Dispose();
   void            FlushInternal(void);
   bool            ConfigureMediaCodec(void);
   int             GetOutputPicture(void);
@@ -125,6 +130,9 @@ protected:
   std::string     m_formatname;
   bool            m_opened;
   bool            m_drop;
+  int             m_codecControlFlags;
+  int             m_state;
+  int             m_noPictureLoop;
 
   CJNISurface    *m_surface;
   unsigned int    m_textureId;
@@ -144,6 +152,7 @@ protected:
   CBitstreamConverter *m_bitstream;
   DVDVideoPicture m_videobuffer;
 
+  int             m_dec_retcode;
   bool            m_render_sw;
   bool            m_render_surface;
   int             m_src_offset[4];

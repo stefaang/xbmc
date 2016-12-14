@@ -28,6 +28,7 @@
 
 #include "cores/AudioEngine/Utils/AEChannelInfo.h"
 #include "cores/AudioEngine/Interfaces/AEStream.h"
+#include <atomic>
 
 extern "C" {
 #include "libavcodec/avcodec.h"
@@ -41,7 +42,7 @@ class CDVDClock;
 class CDVDAudio : IAEClockCallback
 {
 public:
-  CDVDAudio(volatile bool& bStop, CDVDClock *clock);
+  CDVDAudio(CDVDClock *clock);
   ~CDVDAudio();
 
   void SetVolume(float fVolume);
@@ -54,7 +55,7 @@ public:
   void Destroy();
   unsigned int AddPackets(const DVDAudioFrame &audioframe);
   double GetPlayingPts();
-  double GetCacheTime();  // returns total amount of data cached in audio output at this time
+  double GetCacheTime();
   double GetCacheTotal(); // returns total amount the audio device can buffer
   double GetDelay(); // returns the time it takes to play a packet if we add one at this time
   double GetSyncError();
@@ -63,9 +64,7 @@ public:
   void SetResampleMode(int mode);
   void Flush();
   void Drain();
-
-  void SetSpeed(int iSpeed);
-  void SetResampleRatio(double ratio);
+  void AbortAddPackets();
 
   double GetClock();
   double GetClockSpeed();
@@ -86,6 +85,6 @@ protected:
   CAEChannelInfo m_channelLayout;
   bool m_bPaused;
 
-  volatile bool& m_bStop;
+  std::atomic_bool m_bAbort;
   CDVDClock *m_pClock;
 };

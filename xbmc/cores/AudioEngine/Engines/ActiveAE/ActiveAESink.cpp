@@ -1,6 +1,6 @@
 /*
- *      Copyright (C) 2010-2013 Team XBMC
- *      http://xbmc.org
+ *      Copyright (C) 2010-2015 Team Kodi
+ *      http://kodi.tv
  *
  *  This Program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License
- *  along with XBMC; see the file COPYING.  If not, see
+ *  along with Kodi; see the file COPYING.  If not, see
  *  <http://www.gnu.org/licenses/>.
  *
  */
@@ -27,12 +27,14 @@
 #include "utils/EndianSwap.h"
 #include "ActiveAE.h"
 #include "cores/AudioEngine/AEResampleFactory.h"
-
-#include "settings/Settings.h"
 #include "utils/log.h"
 
 #include <new> // for std::bad_alloc
 #include <algorithm>
+
+#ifdef TARGET_POSIX
+#include "linux/XMemUtils.h"
+#endif
 
 using namespace ActiveAE;
 
@@ -46,6 +48,7 @@ CActiveAESink::CActiveAESink(CEvent *inMsgEvent) :
   m_stats = nullptr;
   m_volume = 0.0;
   m_packer = nullptr;
+  m_streamNoise = true;
 }
 
 void CActiveAESink::Start()
@@ -137,7 +140,7 @@ bool CActiveAESink::SupportsFormat(const std::string &device, AEAudioFormat &for
             switch (format.m_streamInfo.m_type)
             {
               case CAEStreamInfo::STREAM_TYPE_EAC3:
-                samplerate = 4 * format.m_streamInfo.m_sampleRate;
+                samplerate = 192000;
                 break;
 
               case CAEStreamInfo::STREAM_TYPE_TRUEHD:
@@ -160,7 +163,10 @@ bool CActiveAESink::SupportsFormat(const std::string &device, AEAudioFormat &for
           }
           else if (isRaw && !info.m_wantsIECPassthrough)
           {
-            // fix me
+            samplerate = 48000;
+            AEDataTypeList::iterator iit3;
+            iit3 = find(info.m_streamTypes.begin(), info.m_streamTypes.end(), format.m_streamInfo.m_type);
+            formatExists = (iit3 != info.m_streamTypes.end());
           }
           else // PCM case
           {
@@ -210,7 +216,7 @@ bool CActiveAESink::NeedIECPacking()
       }
     }
   }
-  return false;
+  return true;
 }
 
 enum SINK_STATES
@@ -264,10 +270,10 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           {
             SinkReply reply;
             reply.format = m_sinkFormat;
-            // TODO
-            // use max raw packet size, for now use max size of an IEC packed packet
-            // maxIECPpacket > maxRawPacket
-            // for raw packets frameSize is set to 1
+            //! @todo
+            //! use max raw packet size, for now use max size of an IEC packed packet
+            //! maxIECPpacket > maxRawPacket
+            //! for raw packets frameSize is set to 1
             if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
             {
               reply.format.m_frames = 61440;
@@ -313,6 +319,14 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
 
         case CSinkControlProtocol::STREAMING:
           m_extStreaming = *(bool*)msg->data;
+          return;
+
+        case CSinkControlProtocol::SETSILENCETIMEOUT:
+          m_silenceTimeOut = *(int*)msg->data;
+          return;
+
+        case CSinkControlProtocol::SETNOISETYPE:
+          m_streamNoise = *(bool*)msg->data;
           return;
 
         default:
@@ -387,6 +401,17 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           m_volume = *(float*)msg->data;
           m_sink->SetVolume(m_volume);
           return;
+
+        case CSinkControlProtocol::SETNOISETYPE:
+        {
+          bool streamNoise = *(bool*)msg->data;
+          if (streamNoise != m_streamNoise)
+          {
+            m_streamNoise = streamNoise;
+            GenerateNoise();
+          }
+        }
+        return;
         default:
           break;
         }
@@ -651,7 +676,7 @@ void CActiveAESink::EnumerateSinkList(bool force)
   unsigned int c_retry = 4;
   m_sinkInfoList.clear();
   CAESinkFactory::EnumerateEx(m_sinkInfoList);
-  while(m_sinkInfoList.size() == 0 && c_retry > 0)
+  while(m_sinkInfoList.empty() && c_retry > 0)
   {
     CLog::Log(LOGNOTICE, "No Devices found - retry: %d", c_retry);
     Sleep(1500);
@@ -811,7 +836,7 @@ void CActiveAESink::OpenSink()
   }
 
   // open NULL sink
-  // TODO: should not be required by ActiveAE
+  //! @todo should not be required by ActiveAE
   if (!m_sink)
   {
     device = "NULL:NULL";
@@ -865,6 +890,11 @@ void CActiveAESink::OpenSink()
   m_sampleOfSilence.pkt->nb_samples = m_sampleOfSilence.pkt->max_nb_samples;
   if (!passthrough)
     GenerateNoise();
+  else
+  {
+    m_sampleOfSilence.pkt->nb_samples = 0;
+    m_sampleOfSilence.pkt->pause_burst_ms = m_sinkFormat.m_streamInfo.GetDuration();
+  }
 
   m_swapState = CHECK_SWAP;
 }
@@ -880,6 +910,7 @@ void CActiveAESink::ReturnBuffers()
       samples = *((CSampleBuffer**)msg->data);
       msg->Reply(CSinkDataProtocol::RETURNSAMPLE, &samples, sizeof(CSampleBuffer*));
     }
+    msg->Release();
   }
 }
 
@@ -892,50 +923,104 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
   unsigned int maxFrames;
   int retry = 0;
   unsigned int written = 0;
+  std::unique_ptr<uint8_t[]> mergebuffer;
+  uint8_t* p_mergebuffer = NULL;
+  AEDelayStatus status;
 
-  if (m_requestedFormat.m_dataFormat == AE_FMT_RAW && m_needIecPack && samples->pool && frames > 0)
+  if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
   {
-    if (m_sinkFormat.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
+    if (m_needIecPack)
     {
-      int offset;
-      int len;
-      m_packer->GetBuffer();
-      for (int i=0; i<24; i++)
+      if (frames > 0)
       {
-        offset = i*2560;
-        len = (*(buffer[0] + offset+2560-2) << 8) + *(buffer[0] + offset+2560-1);
-        m_packer->Pack(m_sinkFormat.m_streamInfo, buffer[0] + offset, len);
+        m_packer->Reset();
+        if (m_sinkFormat.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
+        {
+          if (frames == 61440)
+          {
+            int offset;
+            int len;
+            m_packer->GetBuffer();
+            for (int i=0; i<24; i++)
+            {
+              offset = i*2560;
+              len = (*(buffer[0] + offset+2560-2) << 8) + *(buffer[0] + offset+2560-1);
+              m_packer->Pack(m_sinkFormat.m_streamInfo, buffer[0] + offset, len);
+            }
+          }
+          else
+          {
+            m_extError = true;
+            CLog::Log(LOGERROR, "CActiveAESink::OutputSamples - incomplete TrueHD buffer");
+            return 0;
+          }
+        }
+        else
+          m_packer->Pack(m_sinkFormat.m_streamInfo, buffer[0], frames);
+      }
+      else if (samples->pkt->pause_burst_ms > 0)
+      {
+        // construct a pause burst
+        m_packer->PackPause(m_sinkFormat.m_streamInfo, samples->pkt->pause_burst_ms);
+      }
+      else
+        m_packer->Reset();
+
+      unsigned int size = m_packer->GetSize();
+      packBuffer = m_packer->GetBuffer();
+      buffer = &packBuffer;
+      totalFrames = size / m_sinkFormat.m_frameSize;
+      frames = totalFrames;
+
+      switch(m_swapState)
+      {
+        case SKIP_SWAP:
+          break;
+        case NEED_BYTESWAP:
+          Endian_Swap16_buf((uint16_t *)buffer[0], (uint16_t *)buffer[0], size / 2);
+          break;
+        case CHECK_SWAP:
+          SwapInit(samples);
+          if (m_swapState == NEED_BYTESWAP)
+            Endian_Swap16_buf((uint16_t *)buffer[0], (uint16_t *)buffer[0], size / 2);
+          break;
+        default:
+          break;
       }
     }
     else
-      m_packer->Pack(m_sinkFormat.m_streamInfo, buffer[0], frames);
-
-    unsigned int size = m_packer->GetSize();
-    packBuffer = m_packer->GetBuffer();
-    buffer = &packBuffer;
-    totalFrames = size / m_sinkFormat.m_frameSize;
-    frames = totalFrames;
-    switch(m_swapState)
     {
-      case SKIP_SWAP:
-        break;
-      case NEED_BYTESWAP:
-        Endian_Swap16_buf((uint16_t *)buffer[0], (uint16_t *)buffer[0], size / 2);
-        break;
-      case CHECK_SWAP:
-        SwapInit(samples);
-        if (m_swapState == NEED_BYTESWAP)
-          Endian_Swap16_buf((uint16_t *)buffer[0], (uint16_t *)buffer[0], size / 2);
-        break;
-      default:
-        break;
+      if (m_sinkFormat.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD && frames == 61440)
+      {
+        int offset;
+        int len;
+        unsigned int size = 0;
+        mergebuffer.reset(new uint8_t[MAX_IEC61937_PACKET]);
+        p_mergebuffer = mergebuffer.get();
+        for (int i=0; i<24; i++)
+        {
+          offset = i*2560;
+          len = (*(buffer[0] + offset+2560-2) << 8) + *(buffer[0] + offset+2560-1);
+          memcpy(&(mergebuffer.get())[size], buffer[0] + offset, len);
+          size += len;
+        }
+        buffer = &p_mergebuffer;
+        totalFrames = size / m_sinkFormat.m_frameSize;
+        frames = totalFrames;
+      }
+      if (samples->pkt->pause_burst_ms > 0)
+      {
+        m_sink->AddPause(samples->pkt->pause_burst_ms);
+        m_sink->GetDelay(status);
+        m_stats->UpdateSinkDelay(status, samples->pool ? 1 : 0);
+        return status.delay * 1000;
+      }
     }
   }
 
-  AEDelayStatus status;
   int framesOrPackets;
 
-  while(frames > 0)
+  while (frames > 0)
   {
     maxFrames = std::min(frames, m_sinkFormat.m_frames);
     written = m_sink->AddPackets(buffer, maxFrames, totalFrames - frames);
@@ -976,8 +1061,8 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
       m_stats->UpdateSinkDelay(status, samples->pool ? written : 0);
   }
 
-  if (m_requestedFormat.m_dataFormat == AE_FMT_RAW && samples->pool)
-    m_stats->UpdateSinkDelay(status, 1);
+  if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
+    m_stats->UpdateSinkDelay(status, samples->pool ? 1 : 0);
 
   return status.delay * 1000;
 }
@@ -998,22 +1083,28 @@ void CActiveAESink::GenerateNoise()
 {
   int nb_floats = m_sampleOfSilence.pkt->max_nb_samples;
   nb_floats *= m_sampleOfSilence.pkt->config.channels;
+  size_t size = nb_floats*sizeof(float);
 
-  float *noise = (float*)_aligned_malloc(nb_floats*sizeof(float), 16);
+  float *noise = (float*)_aligned_malloc(size, 32);
   if (!noise)
     throw std::bad_alloc();
 
-  float R1, R2;
-  for(int i=0; i<nb_floats;i++)
+  if (!m_streamNoise)
+    memset(noise, 0, size);
+  else
   {
-    do
+    float R1, R2;
+    for(int i = 0; i < nb_floats; i++)
     {
-      R1 = (float) rand() / (float) RAND_MAX;
-      R2 = (float) rand() / (float) RAND_MAX;
+      do
+      {
+        R1 = (float) rand() / (float) RAND_MAX;
+        R2 = (float) rand() / (float) RAND_MAX;
+      }
+      while(R1 == 0.0f);
+
+      noise[i] = (float) sqrt( -2.0f * log( R1 )) * cos( 2.0f * PI * R2 ) * 0.00001f;
     }
-    while(R1 == 0.0f);
-    
-    noise[i] = (float) sqrt( -2.0f * log( R1 )) * cos( 2.0f * PI * R2 ) * 0.00001f;
   }
 
   SampleConfig config = m_sampleOfSilence.pkt->config;
@@ -1043,8 +1134,9 @@ void CActiveAESink::SetSilenceTimer()
   if (m_extStreaming)
     m_extSilenceTimeout = XbmcThreads::EndTime::InfiniteValue;
   else if (m_extAppFocused)
-    m_extSilenceTimeout = CSettings::GetInstance().GetInt(CSettings::SETTING_AUDIOOUTPUT_STREAMSILENCE) * 60000;
+    m_extSilenceTimeout = m_silenceTimeOut;
   else
     m_extSilenceTimeout = 0;
+
   m_extSilenceTimer.Set(m_extSilenceTimeout);
 }

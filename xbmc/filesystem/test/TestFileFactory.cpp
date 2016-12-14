@@ -18,6 +18,7 @@
  *
  */
 
+#include "ServiceBroker.h"
 #include "filesystem/File.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/Settings.h"
@@ -32,7 +33,7 @@ class TestFileFactory : public testing::Test
 protected:
   TestFileFactory()
   {
-    if (CSettings::GetInstance().Initialize())
+    if (CServiceBroker::GetSettings().Initialize())
     {
       std::vector<std::string> advancedsettings =
         CXBMCTestUtils::Instance().getAdvancedSettingsFiles();
@@ -41,20 +42,20 @@ protected:
 
       std::vector<std::string>::iterator it;
       for (it = guisettings.begin(); it < guisettings.end(); ++it)
-        CSettings::GetInstance().Load(*it);
+        CServiceBroker::GetSettings().Load(*it);
 
       for (it = advancedsettings.begin(); it < advancedsettings.end(); ++it)
         g_advancedSettings.ParseSettingsFile(*it);
 
-      CSettings::GetInstance().SetLoaded();
+      CServiceBroker::GetSettings().SetLoaded();
     }
   }
 
   ~TestFileFactory()
   {
     g_advancedSettings.Clear();
-    CSettings::GetInstance().Unload();
-    CSettings::GetInstance().Uninitialize();
+    CServiceBroker::GetSettings().Unload();
+    CServiceBroker::GetSettings().Uninitialize();
   }
 };
 
@@ -90,7 +91,7 @@ TEST_F(TestFileFactory, Read)
     std::cout << "File contents:" << std::endl;
     while ((size = file.Read(buf, sizeof(buf))) > 0)
     {
-      str = StringUtils::Format("  %08X", count);
+      str = StringUtils::Format("  %08llX", count);
       std::cout << str << "  ";
       count += size;
       for (i = 0; i < size; i++)
@@ -152,7 +153,7 @@ TEST_F(TestFileFactory, Write)
     std::cout << "File contents:\n";
     while ((size = file.Read(buf, sizeof(buf))) > 0)
     {
-      str = StringUtils::Format("  %08X", count);
+      str = StringUtils::Format("  %08llX", count);
       std::cout << str << "  ";
       count += size;
       for (i = 0; i < size; i++)

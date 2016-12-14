@@ -33,10 +33,12 @@
 #include "UPnPSettings.h"
 #include "utils/URIUtils.h"
 #include "Application.h"
+#include "ServiceBroker.h"
 #include "messaging/ApplicationMessenger.h"
 #include "network/Network.h"
 #include "utils/log.h"
 #include "URL.h"
+#include "cores/playercorefactory/PlayerCoreFactory.h"
 #include "profiles/ProfilesManager.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/Settings.h"
@@ -248,7 +250,13 @@ public:
             if (time < 0) time = 0;
             curr_value.Append(NPT_String::Format("<upnp:lastPlaybackPosition>%ld</upnp:lastPlaybackPosition>",
                                                  (long)item.GetVideoInfoTag()->m_resumePoint.timeInSeconds));
+            curr_value += "<xbmc:lastPlayerState>";
+            PLT_Didl::AppendXmlEscape(curr_value, item.GetVideoInfoTag()->m_resumePoint.playerState.c_str());
+            curr_value += "</xbmc:lastPlayerState>";
             new_value.Append(NPT_String::Format("<upnp:lastPlaybackPosition>%ld</upnp:lastPlaybackPosition>", time));
+            new_value += "<xbmc:lastPlayerState>";
+            PLT_Didl::AppendXmlEscape(new_value, bookmark.playerState.c_str());
+            new_value += "</xbmc:lastPlayerState>";
         }
         if (updatePlayCount) {
             CLog::Log(LOGDEBUG, "UPNP: Marking video item %s as watched", path.c_str());
@@ -274,11 +282,11 @@ public:
         NPT_CHECK_LABEL(FindServer(url.GetHostName().c_str(), device),failed);
         NPT_CHECK_LABEL(device->FindServiceById("urn:upnp-org:serviceId:ContentDirectory", cds),failed);
 
-        NPT_CHECK_SEVERE(m_CtrlPoint->CreateAction(
+        NPT_CHECK_LABEL(m_CtrlPoint->CreateAction(
             device,
             "urn:schemas-upnp-org:service:ContentDirectory:1",
             "UpdateObject",
-            action));
+            action), failed);
 
         NPT_CHECK_LABEL(action->SetArgumentValue("ObjectID", url.GetFileName().c_str()), failed);
         NPT_CHECK_LABEL(action->SetArgumentValue("CurrentTagValue", curr_value), failed);
@@ -383,8 +391,8 @@ public:
       return false;
 
     CPlayerCoreFactory::GetInstance().OnPlayerDiscovered((const char*)device->GetUUID()
-                                          ,(const char*)device->GetFriendlyName()
-                                          , EPC_UPNPPLAYER);
+                                          ,(const char*)device->GetFriendlyName());
+    
     m_registeredRenderers.insert(std::string(device->GetUUID().GetChars()));
     return true;
   }
@@ -420,7 +428,7 @@ CUPnP::CUPnP() :
     m_CtrlPointHolder(new CCtrlPointReferenceHolder())
 {
     NPT_LogManager::GetDefault().Configure("plist:.level=FINE;.handlers=CustomHandler;");
-    NPT_LogHandler::Create("CustomHandler", "xbmc", m_LogHandler);
+    NPT_LogHandler::Create("xbmc", "CustomHandler", m_LogHandler);
     m_LogHandler->SetCustomHandlerFunction(&UPnPLogger);
 
     // initialize upnp context
@@ -635,7 +643,7 @@ CUPnP::CreateServer(int port /* = 0 */)
     // but it doesn't work anyways as it requires multicast for XP to detect us
     device->m_PresentationURL =
         NPT_HttpUrl(m_IP.c_str(),
-                    CSettings::GetInstance().GetInt(CSettings::SETTING_SERVICES_WEBSERVERPORT),
+                    CServiceBroker::GetSettings().GetInt(CSettings::SETTING_SERVICES_WEBSERVERPORT),
                     "/").ToString();
 
     device->m_ModelName        = "Kodi";
@@ -718,7 +726,7 @@ CUPnP::CreateRenderer(int port /* = 0 */)
 
     device->m_PresentationURL =
         NPT_HttpUrl(m_IP.c_str(),
-                    CSettings::GetInstance().GetInt(CSettings::SETTING_SERVICES_WEBSERVERPORT),
+                    CServiceBroker::GetSettings().GetInt(CSettings::SETTING_SERVICES_WEBSERVERPORT),
                     "/").ToString();
     device->m_ModelName        = "Kodi";
     device->m_ModelNumber      = CSysInfo::GetVersion().c_str();

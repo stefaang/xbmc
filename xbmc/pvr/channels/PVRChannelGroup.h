@@ -19,18 +19,19 @@
  *
  */
 
+#include "settings/lib/ISettingCallback.h"
+#include "utils/Job.h"
+
+#include "pvr/PVRTypes.h"
+#include "pvr/channels/PVRChannel.h"
+
 #include <memory>
 #include <utility>
+#include <vector>
 
-#include "FileItem.h"
-#include "PVRChannel.h"
-#include "settings/lib/ISettingCallback.h"
-#include "utils/JobManager.h"
-
-namespace EPG
-{
-  struct EpgSearchFilter;
-}
+class CDateTime;
+class CFileItem;
+typedef std::shared_ptr<CFileItem> CFileItemPtr;
 
 namespace PVR
 {
@@ -57,9 +58,6 @@ namespace PVR
     EPG_FIRST_DATE = 0,
     EPG_LAST_DATE = 1
   };
-
-  class CPVRChannelGroup;
-  typedef std::shared_ptr<PVR::CPVRChannelGroup> CPVRChannelGroupPtr;
 
   /** A group of channels */
   class CPVRChannelGroup : public Observable,
@@ -104,13 +102,6 @@ namespace PVR
      * Empty group member
      */
     static PVRChannelGroupMember EmptyMember;
-
-    /*!
-     * Translate an id used in the path to a client id + unique channel id pair
-     * @param pathId Id in the path to translate
-     * @return The requested pair
-     */
-    static std::pair<int, int> PathIdToStorageId(uint64_t pathId);
 
     /*!
      * @return The amount of group members
@@ -382,14 +373,6 @@ namespace PVR
     void OnJobComplete(unsigned int jobID, bool success, CJob* job) override {}
 
     /*!
-     * @brief Get all EPG tables and apply a filter.
-     * @param results The fileitem list to store the results in.
-     * @param filter The filter to apply.
-     * @return The amount of entries that were added.
-     */
-    int GetEPGSearch(CFileItemList &results, const EPG::EpgSearchFilter &filter);
-
-    /*!
      * @brief Get all EPG tables.
      * @param results The fileitem list to store the results in.
      * @param bIncludeChannelsWithoutEPG, for channels without EPG data, put an empty EPG tag associated with the channel into results
@@ -425,8 +408,6 @@ namespace PVR
 
     bool UpdateChannel(const CFileItem &channel, bool bHidden, bool bEPGEnabled, bool bParentalLocked, int iEPGSource, int iChannelNumber, const std::string &strChannelName, const std::string &strIconPath, const std::string &strStreamURL, bool bUserSetIcon = false);
 
-    bool ToggleChannelLocked(const CFileItem &channel);
-
     /*!
      * @brief Get a channel given the channel number on the client.
      * @param iUniqueChannelId The unique channel id on the client.
@@ -437,7 +418,6 @@ namespace PVR
     const PVRChannelGroupMember& GetByUniqueID(const std::pair<int, int>& id) const;
 
     void SetSelectedGroup(bool bSetTo);
-    bool IsSelectedGroup(void) const;
 
     void SetHidden(bool bHidden);
     bool IsHidden(void) const;
@@ -479,11 +459,6 @@ namespace PVR
      * @return True if all tables were created successfully, false otherwise.
      */
     virtual bool CreateChannelEpgs(bool bForce = false);
-
-    /*!
-     * @brief Remove invalid channels from this container.
-     */
-    void RemoveInvalidChannels(void);
 
     /*!
      * @brief Load the channels from the database.
@@ -556,7 +531,7 @@ namespace PVR
   class CPVRPersistGroupJob : public CJob
   {
   public:
-    CPVRPersistGroupJob(CPVRChannelGroupPtr group): m_group(group) {}
+    CPVRPersistGroupJob(const CPVRChannelGroupPtr &group): m_group(group) {}
     virtual ~CPVRPersistGroupJob() {}
     const char *GetType() const { return "pvr-channelgroup-persist"; }
 

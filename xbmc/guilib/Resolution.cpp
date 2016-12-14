@@ -227,7 +227,8 @@ RESOLUTION CResolutionUtils::FindClosestResolution(float fps, int width, bool is
       if ((width < orig.iScreenWidth) || // orig res large enough
          (info.iScreenWidth < orig.iScreenWidth) || // new res is smaller
          (info.iScreenHeight < orig.iScreenHeight) || // new height would be smaller
-         (info.dwFlags & D3DPRESENTFLAG_MODEMASK) != (curr.dwFlags & D3DPRESENTFLAG_MODEMASK)) // don't switch to interlaced modes
+         (info.dwFlags & D3DPRESENTFLAG_MODEMASK) != (curr.dwFlags & D3DPRESENTFLAG_MODEMASK) || // don't switch to interlaced modes
+         (info.iScreen != curr.iScreen)) // skip not current displays
       {
         continue;
       }
@@ -256,8 +257,8 @@ RESOLUTION CResolutionUtils::FindClosestResolution(float fps, int width, bool is
     }
     else
     {
-      int c_weight = MathUtils::round_int(RefreshWeight(curr.fRefreshRate, fRefreshRate * multiplier) * 1000.0);
-      int i_weight = MathUtils::round_int(RefreshWeight(info.fRefreshRate, fRefreshRate * multiplier) * 1000.0);
+      int c_weight = MathUtils::round_int(RefreshWeight(curr.fRefreshRate, fRefreshRate * multiplier) * 10000.0);
+      int i_weight = MathUtils::round_int(RefreshWeight(info.fRefreshRate, fRefreshRate * multiplier) * 10000.0);
 
       RESOLUTION current_bak = current;
       RESOLUTION_INFO curr_bak = curr;
@@ -302,8 +303,21 @@ float CResolutionUtils::RefreshWeight(float refresh, float fps)
   float div   = refresh / fps;
   int   round = MathUtils::round_int(div);
 
+  float weight = 0.0f;
+
   if (round < 1)
-    return (fps - refresh) / fps;
+    weight = (fps - refresh) / fps;
   else
-    return (float)fabs(div / round - 1.0);
+    weight = (float)fabs(div / round - 1.0);
+
+  // punish higher refreshrates and prefer better matching
+  // e.g. 30 fps content at 60 hz is better than
+  // 30 fps at 120 hz - as we sometimes don't know if
+  // the content is interlaced at the start, only
+  // punish when refreshrate > 60 hz to not have to switch
+  // twice for 30i content
+  if (refresh > 60 && round > 1)
+    weight += round / 10000.0;
+
+  return weight;
 }

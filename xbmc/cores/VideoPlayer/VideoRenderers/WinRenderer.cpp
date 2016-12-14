@@ -21,6 +21,7 @@
 #ifdef HAS_DX
 
 #include "WinRenderer.h"
+#include "ServiceBroker.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.h"
 #include "cores/FFmpeg.h"
 #include "dialogs/GUIDialogKaiToast.h"
@@ -34,6 +35,7 @@
 #include "utils/log.h"
 #include "utils/win32/gpu_memcpy_sse4.h"
 #include "VideoShaders/WinVideoFilter.h"
+#include "platform/win32/WIN32Util.h"
 #include "windowing/WindowingFactory.h"
 
 typedef struct {
@@ -83,7 +85,6 @@ CWinRenderer::CWinRenderer()
   m_destWidth = 0;
   m_destHeight = 0;
   m_bConfigured = false;
-  m_clearColour = 0;
   m_format = RENDER_FMT_NONE;
   m_processor = nullptr;
   m_neededBuffers = 0;
@@ -106,6 +107,21 @@ static enum AVPixelFormat PixelFormatFromFormat(ERenderFormat format)
   return AV_PIX_FMT_NONE;
 }
 
+bool CWinRenderer::HandlesRenderFormat(ERenderFormat format)
+{
+  if(format == RENDER_FMT_DXVA
+  || format == RENDER_FMT_YUV420P
+  || format == RENDER_FMT_YUV420P10
+  || format == RENDER_FMT_YUV420P16
+  || format == RENDER_FMT_NV12
+  || format == RENDER_FMT_UYVY422
+  || format == RENDER_FMT_YUYV422)
+  {
+    return true;
+  }
+  return false;
+}
+
 void CWinRenderer::ManageTextures()
 {
   if( m_NumYV12Buffers < m_neededBuffers )
@@ -117,11 +133,11 @@ void CWinRenderer::ManageTextures()
   }
   else if( m_NumYV12Buffers > m_neededBuffers )
   {
+    for (int i = m_NumYV12Buffers - 1; i >= m_neededBuffers; i--)
+      DeleteYV12Texture(i);
+
     m_NumYV12Buffers = m_neededBuffers;
     m_iYV12RenderBuffer = m_iYV12RenderBuffer % m_NumYV12Buffers;
-
-    for(int i = m_NumYV12Buffers-1; i>=m_neededBuffers;i--)
-      DeleteYV12Texture(i);
   }
 }
 
@@ -193,44 +209,16 @@ void CWinRenderer::SelectRenderMethod()
   m_frameIdx = 0;
 }
 
-bool CWinRenderer::UpdateRenderMethod()
-{
-  if (m_SWTarget.Get())
-    m_SWTarget.Release();
-
-  if (m_renderMethod == RENDER_SW)
-  {
-    if (!m_SWTarget.Create(m_sourceWidth, m_sourceHeight, 1, D3D11_USAGE_DYNAMIC, DXGI_FORMAT_B8G8R8X8_UNORM))
-    {
-      CLog::Log(LOGNOTICE, __FUNCTION__": Failed to create sw render target.");
-      return false;
-    }
-  }
-  return true;
-}
-
 bool CWinRenderer::Configure(unsigned int width, unsigned int height, unsigned int d_width, unsigned int d_height, float fps, unsigned flags, ERenderFormat format, unsigned extended_format, unsigned int orientation)
 {
-  if(m_sourceWidth  != width
-  || m_sourceHeight != height)
-  {
-    m_sourceWidth       = width;
-    m_sourceHeight      = height;
-    // need to recreate textures
-    m_NumYV12Buffers    = 0;
-    m_iYV12RenderBuffer = 0;
-    // reinitialize the filters/shaders
-    m_bFilterInitialized = false;
-  }
-  else
-  {
-    if (m_VideoBuffers[m_iYV12RenderBuffer] != nullptr)
-      m_VideoBuffers[m_iYV12RenderBuffer]->StartDecode();
-
-    m_iYV12RenderBuffer = 0;
-    if (m_VideoBuffers[0] != nullptr)
-      m_VideoBuffers[0]->StartRender();
-  }
+  m_sourceWidth       = width;
+  m_sourceHeight      = height;
+  m_renderOrientation = orientation;
+  // need to recreate textures
+  m_NumYV12Buffers    = 0;
+  m_iYV12RenderBuffer = 0;
+  // reinitialize the filters/shaders
+  m_bFilterInitialized = false;
 
   m_fps = fps;
   m_iFlags = flags;
@@ -239,16 +227,11 @@ bool CWinRenderer::Configure(unsigned int width, unsigned int height, unsigned i
 
   // calculate the input frame aspect ratio
   CalculateFrameAspectRatio(d_width, d_height);
-  RESOLUTION_INFO res = g_graphicsContext.GetResInfo(RES_DESKTOP);
-  m_destWidth = res.iWidth;
-  m_destHeight = res.iHeight;
   SetViewMode(CMediaSettings::GetInstance().GetCurrentVideoSettings().m_ViewMode);
-  ManageDisplay();
-
-  m_bConfigured = true;
+  ManageRenderArea();
 
   SelectRenderMethod();
-  UpdateRenderMethod();
+  m_bConfigured = true;
 
   return true;
 }
@@ -261,60 +244,52 @@ int CWinRenderer::NextYV12Texture()
     return -1;
 }
 
-bool CWinRenderer::AddVideoPicture(DVDVideoPicture* picture, int index)
+bool CWinRenderer::IsPictureHW(DVDVideoPicture &picture)
 {
-  if (!m_NumYV12Buffers)
+  if (m_renderMethod == RENDER_DXVA
+    || picture.format == RENDER_FMT_DXVA)
   {
-    return false;
-  }
-
-  if (m_renderMethod == RENDER_DXVA)
-  {
-    int source = index;
-    if(source < 0 || NextYV12Texture() < 0)
-      return false;
-
-    DXVABuffer *buf = (DXVABuffer*)m_VideoBuffers[source];
-    SAFE_RELEASE(buf->pic);
-    if (picture->format == RENDER_FMT_DXVA)
-    {
-      buf->pic = picture->dxva->Acquire();
-    }
-    else
-    {
-      buf->pic = m_processor->Convert(picture);
-    }
-    buf->frameIdx = m_frameIdx;
-    m_frameIdx += 2;
     return true;
-  }
-  else if (picture->format == RENDER_FMT_DXVA)
-  {
-    int source = index;
-    if (source < 0 || NextYV12Texture() < 0)
-      return false;
-
-    YUVBuffer *buf = (YUVBuffer*)m_VideoBuffers[source];
-    if (buf->IsReadyToRender())
-      return false;
-
-    return buf->CopyFromDXVA(reinterpret_cast<ID3D11VideoDecoderOutputView*>(picture->dxva->view));
   }
   return false;
 }
 
+void CWinRenderer::AddVideoPictureHW(DVDVideoPicture &picture, int index)
+{
+  if (m_renderMethod == RENDER_DXVA)
+  {
+    DXVABuffer *buf = reinterpret_cast<DXVABuffer*>(m_VideoBuffers[index]);
+    SAFE_RELEASE(buf->pic);
+    buf->pic = m_processor->Convert(picture);
+    buf->frameIdx = m_frameIdx;
+    m_frameIdx += 2;
+  }
+  else if (picture.format == RENDER_FMT_DXVA)
+  {
+    YUVBuffer *buf = reinterpret_cast<YUVBuffer*>(m_VideoBuffers[index]);
+    if (buf->IsReadyToRender())
+      return;
+    buf->CopyFromPicture(picture);
+  }
+}
+
 int CWinRenderer::GetImage(YV12Image *image, int source, bool readonly)
 {
+  if (!image) return -1;
+  if (!m_NumYV12Buffers) return -1;
+
   /* take next available buffer */
   if( source == AUTOSOURCE )
     source = NextYV12Texture();
 
-  if( source < 0 || NextYV12Texture() < 0)
+  if (source < 0 || NextYV12Texture() < 0)
     return -1;
 
-  YUVBuffer *buf = (YUVBuffer*)m_VideoBuffers[source];
+  if (m_renderMethod == RENDER_DXVA)
+    return source;
 
-  if (buf->IsReadyToRender())
+  YUVBuffer *buf = reinterpret_cast<YUVBuffer*>(m_VideoBuffers[source]);
+  if (!buf)
     return -1;
 
   image->cshift_x = 1;
@@ -339,7 +314,6 @@ int CWinRenderer::GetImage(YV12Image *image, int source, bool readonly)
 
 void CWinRenderer::ReleaseImage(int source, bool preserve)
 {
-  // no need to release anything here since we're using system memory
 }
 
 void CWinRenderer::Reset()
@@ -348,51 +322,38 @@ void CWinRenderer::Reset()
 
 void CWinRenderer::Update()
 {
-  if (!m_bConfigured) return;
-  ManageDisplay();
+  if (!m_bConfigured) 
+    return;
+  ManageRenderArea();
+  ManageTextures();
 }
 
 void CWinRenderer::RenderUpdate(bool clear, unsigned int flags, unsigned int alpha)
 {
   if (clear)
-    g_graphicsContext.Clear(m_clearColour);
+    g_graphicsContext.Clear(g_Windowing.UseLimitedColor() ? 0x101010 : 0);
 
-  if (alpha < 255)
-    g_Windowing.SetAlphaBlendEnable(true);
-  else
-    g_Windowing.SetAlphaBlendEnable(false);
-
-  if (!m_bConfigured) 
+  if (!m_bConfigured)
     return;
 
+  g_Windowing.SetAlphaBlendEnable(alpha < 255);
   ManageTextures();
-
-  CSingleLock lock(g_graphicsContext);
-
-  ManageDisplay();
-
+  ManageRenderArea();
   Render(flags);
 }
 
 void CWinRenderer::FlipPage(int source)
 {
-  if(source == AUTOSOURCE)
-    source = NextYV12Texture();
-
   if (m_VideoBuffers[m_iYV12RenderBuffer] != nullptr)
     m_VideoBuffers[m_iYV12RenderBuffer]->StartDecode();
 
   if( source >= 0 && source < m_NumYV12Buffers )
     m_iYV12RenderBuffer = source;
   else
-    m_iYV12RenderBuffer = 0;
+    m_iYV12RenderBuffer = NextYV12Texture();
 
-  if (m_VideoBuffers[m_iYV12RenderBuffer] != nullptr)
+  if (m_iYV12RenderBuffer >= 0 && m_VideoBuffers[m_iYV12RenderBuffer] != nullptr)
     m_VideoBuffers[m_iYV12RenderBuffer]->StartRender();
-
-#ifdef MP_DIRECTRENDERING
-  __asm wbinvd
-#endif
 
   return;
 }
@@ -403,13 +364,10 @@ void CWinRenderer::PreInit()
   m_bConfigured = false;
   UnInit();
 
-  // setup the background colour
-  m_clearColour = g_Windowing.UseLimitedColor() ? (16 * 0x010101) : 0;
-
   m_formats.clear();
   m_formats.push_back(RENDER_FMT_YUV420P);
 
-  m_iRequestedMethod = CSettings::GetInstance().GetInt(CSettings::SETTING_VIDEOPLAYER_RENDERMETHOD);
+  m_iRequestedMethod = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_VIDEOPLAYER_RENDERMETHOD);
 
   if (g_advancedSettings.m_DXVAForceProcessorRenderer
   ||  m_iRequestedMethod == RENDER_METHOD_DXVA)
@@ -443,9 +401,6 @@ void CWinRenderer::UnInit()
 {
   CSingleLock lock(g_graphicsContext);
 
-  if (m_SWTarget.Get())
-    m_SWTarget.Release();
-
   if (m_IntermediateTarget.Get())
     m_IntermediateTarget.Release();
 
@@ -475,17 +430,18 @@ void CWinRenderer::UnInit()
 
 void CWinRenderer::Flush()
 {
-  PreInit();
-  SetViewMode(CMediaSettings::GetInstance().GetCurrentVideoSettings().m_ViewMode);
-  ManageDisplay();
+  if (!m_bConfigured)
+    return;
 
-  m_bConfigured = true;
+  for (int i = 0; i < NUM_BUFFERS; i++)
+    DeleteYV12Texture(i);
 
-  SelectRenderMethod();
-  UpdateRenderMethod();
+  m_iYV12RenderBuffer = 0;
+  m_NumYV12Buffers = 0;
+  m_bFilterInitialized = false;
 }
 
-bool CWinRenderer::CreateIntermediateRenderTarget(unsigned int width, unsigned int height)
+bool CWinRenderer::CreateIntermediateRenderTarget(unsigned int width, unsigned int height, bool dynamic)
 {
   unsigned int usage = D3D11_FORMAT_SUPPORT_RENDER_TARGET | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE;
 
@@ -504,7 +460,7 @@ bool CWinRenderer::CreateIntermediateRenderTarget(unsigned int width, unsigned i
 
   CLog::Log(LOGDEBUG, __FUNCTION__": format %i", format);
 
-  if(!m_IntermediateTarget.Create(width, height, 1, D3D11_USAGE_DEFAULT, format))
+  if (!m_IntermediateTarget.Create(width, height, 1, dynamic ? D3D11_USAGE_DYNAMIC : D3D11_USAGE_DEFAULT, format))
   {
     CLog::Log(LOGERROR, __FUNCTION__": intermediate render target creation failed.");
     return false;
@@ -529,6 +485,8 @@ void CWinRenderer::SelectSWVideoFilter()
     m_TextureFilter = SHADER_SAMPLER_POINT;
     break;
   }
+
+  CreateIntermediateRenderTarget(m_sourceWidth, m_sourceHeight, true);
 }
 
 void CWinRenderer::SelectPSVideoFilter()
@@ -585,10 +543,19 @@ void CWinRenderer::SelectPSVideoFilter()
       m_bUseHQScaler = true;
     }
   }
+  if (m_renderOrientation)
+    m_bUseHQScaler = false;
 }
 
 void CWinRenderer::UpdatePSVideoFilter()
 {
+  RESOLUTION_INFO res = g_graphicsContext.GetResInfo();
+  if (!res.bFullScreen)
+    res = g_graphicsContext.GetResInfo(RES_DESKTOP);
+
+  m_destWidth = res.iScreenWidth;
+  m_destHeight = res.iScreenHeight;
+
   SAFE_DELETE(m_scalerShader);
 
   if (m_bUseHQScaler)
@@ -616,7 +583,7 @@ void CWinRenderer::UpdatePSVideoFilter()
     }
   }
 
-  if (m_bUseHQScaler && !CreateIntermediateRenderTarget(m_sourceWidth, m_sourceHeight))
+  if (m_bUseHQScaler && !CreateIntermediateRenderTarget(m_sourceWidth, m_sourceHeight, false))
   {
     SAFE_DELETE(m_scalerShader);
     m_bUseHQScaler = false;
@@ -627,32 +594,31 @@ void CWinRenderer::UpdatePSVideoFilter()
   if (m_renderMethod == RENDER_DXVA)
   {
     // we'd use m_IntermediateTarget as rendering target for possible anaglyph stereo with dxva processor.
-    if (!m_bUseHQScaler) 
-      CreateIntermediateRenderTarget(m_destWidth, m_destHeight);
-
+    if (!m_bUseHQScaler)
+      CreateIntermediateRenderTarget(m_destWidth, m_destHeight, false);
     // When using DXVA, we are already setup at this point, color shader is not needed
     return;
   }
 
-  if (m_bUseHQScaler)
+  m_colorShader = new CYUV2RGBShader();
+  if (!m_colorShader->Create(m_sourceWidth, m_sourceHeight, m_format))
   {
-    m_colorShader = new CYUV2RGBShader();
-    if (!m_colorShader->Create(m_sourceWidth, m_sourceHeight, m_format))
+    if (m_bUseHQScaler)
     {
-      // Try again after disabling the HQ scaler and freeing its resources
       m_IntermediateTarget.Release();
       SAFE_DELETE(m_scalerShader);
-      SAFE_DELETE(m_colorShader);
-      m_bUseHQScaler = false;
     }
-  }
+    SAFE_DELETE(m_colorShader);
+    m_bUseHQScaler = false;
 
-  if (!m_bUseHQScaler) //fallback from HQ scalers and multipass creation above
-  {
-    m_colorShader = new CYUV2RGBShader();
-    if (!m_colorShader->Create(m_sourceWidth, m_sourceHeight, m_format))
-      SAFE_DELETE(m_colorShader);
-    // we're in big trouble - should fallback on D3D accelerated or sw method
+    // we're in big trouble - fallback to sw method
+    m_renderMethod = RENDER_SW;
+    if (m_NumYV12Buffers)
+    {
+      m_NumYV12Buffers = 0;
+      ManageTextures();
+    }
+    SelectSWVideoFilter();
   }
 }
 
@@ -691,32 +657,29 @@ void CWinRenderer::UpdateVideoFilter()
 
 void CWinRenderer::Render(DWORD flags)
 {
-  if (m_renderMethod == RENDER_DXVA)
-  {
-    UpdateVideoFilter();
-    CWinRenderer::RenderProcessor(flags);
-    if (m_bUseHQScaler) // restore GUI states after HQ scalers
-      g_Windowing.ApplyStateBlock();
-    return;
-  }
-
   if (!m_VideoBuffers[m_iYV12RenderBuffer]->IsReadyToRender())
     return;
 
   UpdateVideoFilter();
 
-  // Optimize later? we could get by with bilinear under some circumstances
-  /*if(!m_bUseHQScaler
-    || !g_graphicsContext.IsFullScreenVideo()
-    || g_graphicsContext.IsCalibrating()
-    || (m_destRect.Width() == m_sourceWidth && m_destRect.Height() == m_sourceHeight))
-    */
-  CSingleLock lock(g_graphicsContext);
-
-  if (m_renderMethod == RENDER_SW)
-    RenderSW();
-  else if (m_renderMethod == RENDER_PS)
+  switch (m_renderMethod)
+  {
+  case RENDER_DXVA:
+    RenderHW(flags);
+    break;
+  case RENDER_PS:
     RenderPS();
+    break;
+  case RENDER_SW:
+    RenderSW();
+    break;
+  default:
+    return;
+  }
+
+  if (m_bUseHQScaler)
+    RenderHQ();
+  g_Windowing.ApplyStateBlock();
 }
 
 void CWinRenderer::RenderSW()
@@ -729,7 +692,7 @@ void CWinRenderer::RenderSW()
                                         m_sourceWidth, m_sourceHeight, AV_PIX_FMT_BGRA,
                                         SWS_FAST_BILINEAR, NULL, NULL, NULL);
 
-  YUVBuffer* buf = (YUVBuffer*)m_VideoBuffers[m_iYV12RenderBuffer];
+  YUVBuffer* buf = reinterpret_cast<YUVBuffer*>(m_VideoBuffers[m_iYV12RenderBuffer]);
 
   D3D11_MAPPED_SUBRESOURCE srclr[MAX_PLANES];
   uint8_t*                 src[MAX_PLANES];
@@ -747,7 +710,7 @@ void CWinRenderer::RenderSW()
   }
   
   D3D11_MAPPED_SUBRESOURCE destlr;
-  if (!m_SWTarget.LockRect(0, &destlr, D3D11_MAP_WRITE_DISCARD))
+  if (!m_IntermediateTarget.LockRect(0, &destlr, D3D11_MAP_WRITE_DISCARD))
     CLog::Log(LOGERROR, __FUNCTION__" - failed to lock swtarget texture into memory");
 
   uint8_t *dst[] = { (uint8_t*)destlr.pData, 0, 0, 0 };
@@ -759,7 +722,7 @@ void CWinRenderer::RenderSW()
     if(!(buf->planes[idx].texture.UnlockRect(0)))
       CLog::Log(LOGERROR, __FUNCTION__" - failed to unlock yuv textures");
 
-  if (!m_SWTarget.UnlockRect(0))
+  if (!m_IntermediateTarget.UnlockRect(0))
     CLog::Log(LOGERROR, __FUNCTION__" - failed to unlock swtarget texture");
 
   // 2. scale to display
@@ -768,13 +731,8 @@ void CWinRenderer::RenderSW()
   if ((m_destRect.x1 < 0 && m_destRect.x2 < 0) || (m_destRect.y1 < 0 && m_destRect.y2 < 0))
     return;
 
-  ScaleGUIShader();
-}
-
-void CWinRenderer::ScaleGUIShader()
-{
   D3D11_TEXTURE2D_DESC srcDesc;
-  m_SWTarget.Get()->GetDesc(&srcDesc);
+  m_IntermediateTarget.Get()->GetDesc(&srcDesc);
 
   float srcWidth  = (float)srcDesc.Width;
   float srcHeight = (float)srcDesc.Height;
@@ -783,116 +741,88 @@ void CWinRenderer::ScaleGUIShader()
   unsigned int contrast   = (unsigned int)(CMediaSettings::GetInstance().GetCurrentVideoSettings().m_Contrast *.01f * 255.0f); // we have to divide by two here/multiply by two later
   unsigned int brightness = (unsigned int)(CMediaSettings::GetInstance().GetCurrentVideoSettings().m_Brightness * .01f * 255.0f);
 
-  CRect tu = { m_sourceRect.x1 / srcWidth, m_sourceRect.y1 / srcHeight, m_sourceRect.x2 / srcWidth, m_sourceRect.y2 / srcHeight };
-
   g_Windowing.GetGUIShader()->SetSampler(m_TextureFilter);
-
+  CRect tu = { m_sourceRect.x1 / srcWidth, m_sourceRect.y1 / srcHeight, m_sourceRect.x2 / srcWidth, m_sourceRect.y2 / srcHeight };
   // pass contrast and brightness as diffuse color elements (see shader code)
-  CD3DTexture::DrawQuad(m_destRect, D3DCOLOR_ARGB(255, contrast, brightness, 255), &m_SWTarget, &tu,
+  CD3DTexture::DrawQuad(m_rotatedDestCoords, D3DCOLOR_ARGB(255, contrast, brightness, 255), &m_IntermediateTarget, &tu,
                        !cbcontrol ? SHADER_METHOD_RENDER_VIDEO : SHADER_METHOD_RENDER_VIDEO_CONTROL);
 }
 
 void CWinRenderer::RenderPS()
 {
-  if (!m_bUseHQScaler)
-  {
-    Stage1();
-  }
-  else
-  {
-    Stage1();
-    Stage2();
-  }
-
-  // restore GUI states after color/HQ shaders
-  g_Windowing.ApplyStateBlock();
-}
-
-void CWinRenderer::Stage1()
-{
   CD3D11_VIEWPORT viewPort(0.0f, 0.0f, 0.0f, 0.0f);
   ID3D11DeviceContext* pContext = g_Windowing.Get3D11Context();
 
-  // store current render target and depth view.
   ID3D11RenderTargetView *oldRTView = nullptr; ID3D11DepthStencilView* oldDSView = nullptr;
-  pContext->OMGetRenderTargets(1, &oldRTView, &oldDSView);
-  // select destination rectangle 
-  CRect destRect = m_bUseHQScaler ? m_sourceRect : g_graphicsContext.StereoCorrection(m_destRect);
-  // select target view 
-  ID3D11RenderTargetView* pRTView = m_bUseHQScaler ? m_IntermediateTarget.GetRenderTarget() : oldRTView;
-  // set destination render target
-  pContext->OMSetRenderTargets(1, &pRTView, nullptr);
-  // get rendertarget's dimension
-  if (pRTView)
-  {
-    ID3D11Resource* pResource = nullptr;
-    ID3D11Texture2D* pTexture = nullptr;
-
-    pRTView->GetResource(&pResource);
-    if (SUCCEEDED(pResource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&pTexture))))
-    {
-      D3D11_TEXTURE2D_DESC desc;
-      pTexture->GetDesc(&desc);
-      viewPort = CD3D11_VIEWPORT(0.0f, 0.0f, desc.Width, desc.Height);
-    }
-    SAFE_RELEASE(pResource);
-    SAFE_RELEASE(pTexture);
-  }
-  // reset scissors for HQ scaler
   if (m_bUseHQScaler)
+  {
+    // store current render target and depth view.
+    pContext->OMGetRenderTargets(1, &oldRTView, &oldDSView);
+    // change destination for HQ scallers
+    ID3D11RenderTargetView* pRTView = m_IntermediateTarget.GetRenderTarget();
+    pContext->OMSetRenderTargets(1, &pRTView, nullptr);
+    // viewport equals intermediate target size
+    viewPort = CD3D11_VIEWPORT(0.0f, 0.0f, 
+                               static_cast<float>(m_IntermediateTarget.GetWidth()), 
+                               static_cast<float>(m_IntermediateTarget.GetHeight()));
     g_Windowing.ResetScissors();
+  }
+  else
+  {
+    // viewport equals full backbuffer size
+    CRect bbSize = g_Windowing.GetBackBufferRect();
+    viewPort = CD3D11_VIEWPORT(0.f, 0.f, bbSize.Width(), bbSize.Height());
+  }
   // reset view port
   pContext->RSSetViewports(1, &viewPort);
+  // select destination rectangle 
+  CPoint destPoints[4];
+  if (m_renderOrientation)
+  {
+    for (size_t i = 0; i < 4; i++)
+      destPoints[i] = m_rotatedDestCoords[i];
+  }
+  else
+  {
+    CRect destRect = m_bUseHQScaler ? m_sourceRect : g_graphicsContext.StereoCorrection(m_destRect);
+    destPoints[0] = { destRect.x1, destRect.y1 };
+    destPoints[1] = { destRect.x2, destRect.y1 };
+    destPoints[2] = { destRect.x2, destRect.y2 };
+    destPoints[3] = { destRect.x1, destRect.y2 };
+  }
+
   // render video frame
-  m_colorShader->Render(m_sourceRect, destRect,
+  m_colorShader->Render(m_sourceRect, destPoints,
                         CMediaSettings::GetInstance().GetCurrentVideoSettings().m_Contrast,
                         CMediaSettings::GetInstance().GetCurrentVideoSettings().m_Brightness,
-                        m_iFlags, (YUVBuffer*)m_VideoBuffers[m_iYV12RenderBuffer]);
+                        m_iFlags, reinterpret_cast<YUVBuffer*>(m_VideoBuffers[m_iYV12RenderBuffer]));
   // Restore our view port.
   g_Windowing.RestoreViewPort();
   // Restore the render target and depth view.
-  pContext->OMSetRenderTargets(1, &oldRTView, oldDSView);
-  SAFE_RELEASE(oldRTView);
-  SAFE_RELEASE(oldDSView);
+  if (m_bUseHQScaler)
+  {
+    pContext->OMSetRenderTargets(1, &oldRTView, oldDSView);
+    SAFE_RELEASE(oldRTView);
+    SAFE_RELEASE(oldDSView);
+  }
 }
 
-void CWinRenderer::Stage2()
+void CWinRenderer::RenderHQ()
 {
-  m_scalerShader->Render(m_IntermediateTarget, m_sourceWidth, m_sourceHeight, m_destWidth, m_destHeight, m_sourceRect, g_graphicsContext.StereoCorrection(m_destRect));
+  m_scalerShader->Render(m_IntermediateTarget, m_sourceWidth, m_sourceHeight, m_destWidth, m_destHeight
+                       , m_sourceRect, g_graphicsContext.StereoCorrection(m_destRect)
+                       , false);
 }
 
-void CWinRenderer::RenderProcessor(DWORD flags)
+void CWinRenderer::RenderHW(DWORD flags)
 {
-  CSingleLock lock(g_graphicsContext);
-  CRect destRect = m_bUseHQScaler ? m_sourceRect : g_graphicsContext.StereoCorrection(m_destRect);
-  DXVABuffer *image = (DXVABuffer*)m_VideoBuffers[m_iYV12RenderBuffer];
+  DXVABuffer *image = reinterpret_cast<DXVABuffer*>(m_VideoBuffers[m_iYV12RenderBuffer]);
   if (!image->pic)
     return;
-
-  ID3D11Resource* target;
-  if ( m_bUseHQScaler 
-    || g_graphicsContext.GetStereoMode() == RENDER_STEREO_MODE_ANAGLYPH_RED_CYAN
-    || g_graphicsContext.GetStereoMode() == RENDER_STEREO_MODE_ANAGLYPH_GREEN_MAGENTA
-    || g_graphicsContext.GetStereoMode() == RENDER_STEREO_MODE_ANAGLYPH_YELLOW_BLUE
-    || true /* workaround for some GPUs */)
-  {
-    target = m_IntermediateTarget.Get();
-    target->AddRef();
-  }
-  else // dead code.
-  {
-    ID3D11RenderTargetView* rtv = nullptr;
-    g_Windowing.Get3D11Context()->OMGetRenderTargets(1, &rtv, nullptr);
-    if (rtv)
-    {
-      rtv->GetResource(&target);
-      rtv->Release();
-    }
-  }
-
+  
   int past = 0;
   int future = 0;
-  DXVABuffer **buffers = (DXVABuffer**)m_VideoBuffers;
+  DXVABuffer **buffers = reinterpret_cast<DXVABuffer**>(m_VideoBuffers);
 
   ID3D11View* views[8];
   memset(views, 0, 8 * sizeof(ID3D11View*));
@@ -932,22 +862,73 @@ void CWinRenderer::RenderProcessor(DWORD flags)
       break;
   }
 
-  m_processor->Render(m_sourceRect, destRect, target, views, flags, image->frameIdx);
-  
-  if (m_bUseHQScaler)
+  CRect destRect;
+  switch (m_renderOrientation)
   {
-    Stage2();
+  case 90:
+    destRect = CRect(m_rotatedDestCoords[3], m_rotatedDestCoords[1]);
+    break;
+  case 180:
+    destRect = m_destRect;
+    break;
+  case 270:
+    destRect = CRect(m_rotatedDestCoords[1], m_rotatedDestCoords[3]);
+    break;
+  default:
+    destRect = m_bUseHQScaler ? m_sourceRect : g_graphicsContext.StereoCorrection(m_destRect);
+    break;
   }
-  // uncomment when workaround removed
-  else /*if ( g_graphicsContext.GetStereoMode() == RENDER_STEREO_MODE_ANAGLYPH_RED_CYAN
-         || g_graphicsContext.GetStereoMode() == RENDER_STEREO_MODE_ANAGLYPH_GREEN_MAGENTA
-         || g_graphicsContext.GetStereoMode() == RENDER_STEREO_MODE_ANAGLYPH_YELLOW_BLUE)*/
+
+  CRect src = m_sourceRect, dst = destRect;
+  CRect target = CRect(0.0f, 0.0f,
+                       static_cast<float>(m_IntermediateTarget.GetWidth()), 
+                       static_cast<float>(m_IntermediateTarget.GetHeight()));
+  if (m_capture)
   {
-    // texels
-    CRect tu = { destRect.x1 / m_destWidth, destRect.y1 / m_destHeight, destRect.x2 / m_destWidth, destRect.y2 / m_destHeight };
-    CD3DTexture::DrawQuad(m_destRect, 0, &m_IntermediateTarget, &tu, SHADER_METHOD_RENDER_TEXTURE_NOBLEND);
+    target.x2 = m_capture->GetWidth();
+    target.y2 = m_capture->GetHeight();
   }
-  SAFE_RELEASE(target);
+  CWIN32Util::CropSource(src, dst, target, m_renderOrientation);
+
+  ID3D11RenderTargetView* pView = nullptr;
+  ID3D11Resource* pResource = m_IntermediateTarget.Get();
+  if (m_capture)
+  {
+    g_Windowing.Get3D11Context()->OMGetRenderTargets(1, &pView, nullptr);
+    if (pView)
+      pView->GetResource(&pResource);
+  }
+
+  m_processor->Render(src, dst, pResource, views, flags, image->frameIdx, m_renderOrientation);
+
+  if (m_capture)
+  {
+    SAFE_RELEASE(pResource);
+    SAFE_RELEASE(pView);
+  }
+
+  if (!m_bUseHQScaler && !m_capture)
+  {
+    CRect oldViewPort;
+    bool stereoHack = g_graphicsContext.GetStereoMode() == RENDER_STEREO_MODE_SPLIT_HORIZONTAL
+                   || g_graphicsContext.GetStereoMode() == RENDER_STEREO_MODE_SPLIT_VERTICAL;
+
+    if (stereoHack)
+    {
+      CRect bbSize = g_Windowing.GetBackBufferRect();
+
+      g_Windowing.GetViewPort(oldViewPort);
+      g_Windowing.SetViewPort(bbSize);
+      g_Windowing.SetCameraPosition(CPoint(bbSize.Width() / 2.f, bbSize.Height() / 2.f), bbSize.Width(), bbSize.Height(), 0.f);
+    }
+
+    // render frame
+    CRect tu = { dst.x1 / m_destWidth, dst.y1 / m_destHeight, dst.x2 / m_destWidth, dst.y2 / m_destHeight };
+    CD3DTexture::DrawQuad(dst, 0xFFFFFF, &m_IntermediateTarget, &tu, SHADER_METHOD_RENDER_TEXTURE_NOBLEND);
+
+    if (stereoHack)
+      g_Windowing.SetViewPort(oldViewPort);
+  }
 }
 
 bool CWinRenderer::RenderCapture(CRenderCapture* capture)
@@ -972,7 +953,9 @@ bool CWinRenderer::RenderCapture(CRenderCapture* capture)
   capture->BeginRender();
   if (capture->GetState() != CAPTURESTATE_FAILED)
   {
+    m_capture = capture;
     Render(0);
+    m_capture = nullptr;
     capture->EndRender();
     succeeded = true;
   }
@@ -993,9 +976,7 @@ bool CWinRenderer::RenderCapture(CRenderCapture* capture)
 void CWinRenderer::DeleteYV12Texture(int index)
 {
   CSingleLock lock(g_graphicsContext);
-  if (m_VideoBuffers[index] != nullptr)
-    SAFE_DELETE(m_VideoBuffers[index]);
-  m_NumYV12Buffers = 0;
+  SAFE_DELETE(m_VideoBuffers[index]);
 }
 
 bool CWinRenderer::CreateYV12Texture(int index)
@@ -1010,7 +991,6 @@ bool CWinRenderer::CreateYV12Texture(int index)
   else
   {
     YUVBuffer *buf = new YUVBuffer();
-
     if (!buf->Create(m_format, m_sourceWidth, m_sourceHeight, m_renderMethod == RENDER_PS))
     {
       CLog::Log(LOGERROR, __FUNCTION__" - Unable to create YV12 video texture %i", index);
@@ -1020,44 +1000,11 @@ bool CWinRenderer::CreateYV12Texture(int index)
     m_VideoBuffers[index] = buf;
   }
 
-  SVideoBuffer *buf = m_VideoBuffers[index];
-
-  buf->StartDecode();
-  buf->Clear();
+  m_VideoBuffers[index]->StartDecode();
+  m_VideoBuffers[index]->Clear();
 
   CLog::Log(LOGDEBUG, "created video buffer %i", index);
   return true;
-}
-
-bool CWinRenderer::Supports(EDEINTERLACEMODE mode)
-{
-  if(mode == VS_DEINTERLACEMODE_OFF
-  || mode == VS_DEINTERLACEMODE_AUTO
-  || mode == VS_DEINTERLACEMODE_FORCE)
-    return true;
-
-  return false;
-}
-
-bool CWinRenderer::Supports(EINTERLACEMETHOD method)
-{
-  if(method == VS_INTERLACEMETHOD_AUTO)
-    return true;
-
-  if (m_renderMethod == RENDER_DXVA)
-  {
-    //if(method == VS_INTERLACEMETHOD_DXVA_BOB
-    //|| method == VS_INTERLACEMETHOD_DXVA_BEST)
-      return false; // only auto. DXVA processor selects deinterlacing method automatically
-  }
-
-  if(m_format != RENDER_FMT_DXVA
-  && (   method == VS_INTERLACEMETHOD_DEINTERLACE
-      || method == VS_INTERLACEMETHOD_DEINTERLACE_HALF
-      || method == VS_INTERLACEMETHOD_SW_BLEND))
-    return true;
-
-  return false;
 }
 
 bool CWinRenderer::Supports(ERENDERFEATURE feature)
@@ -1073,6 +1020,7 @@ bool CWinRenderer::Supports(ERENDERFEATURE feature)
       feature == RENDERFEATURE_ZOOM            ||
       feature == RENDERFEATURE_VERTICAL_SHIFT  ||
       feature == RENDERFEATURE_PIXEL_RATIO     ||
+      feature == RENDERFEATURE_ROTATION        ||
       feature == RENDERFEATURE_POSTPROCESS)
     return true;
 
@@ -1089,7 +1037,7 @@ bool CWinRenderer::Supports(ESCALINGMETHOD method)
       if (method == VS_SCALINGMETHOD_DXVA_HARDWARE ||
           method == VS_SCALINGMETHOD_AUTO)
         return true;
-      else if (!g_advancedSettings.m_DXVAAllowHqScaling)
+      else if (!g_advancedSettings.m_DXVAAllowHqScaling || m_renderOrientation)
         return false;
     }
 
@@ -1097,7 +1045,7 @@ bool CWinRenderer::Supports(ESCALINGMETHOD method)
       || (method == VS_SCALINGMETHOD_LINEAR && m_renderMethod == RENDER_PS)) 
         return true;
 
-    if (g_Windowing.GetFeatureLevel() >= D3D_FEATURE_LEVEL_9_3)
+    if (g_Windowing.GetFeatureLevel() >= D3D_FEATURE_LEVEL_9_3 && !m_renderOrientation)
     {
       if(method == VS_SCALINGMETHOD_CUBIC
       || method == VS_SCALINGMETHOD_LANCZOS2
@@ -1109,7 +1057,7 @@ bool CWinRenderer::Supports(ESCALINGMETHOD method)
         // if scaling is below level, avoid hq scaling
         float scaleX = fabs(((float)m_sourceWidth - m_destRect.Width())/m_sourceWidth)*100;
         float scaleY = fabs(((float)m_sourceHeight - m_destRect.Height())/m_sourceHeight)*100;
-        int minScale = CSettings::GetInstance().GetInt(CSettings::SETTING_VIDEOPLAYER_HQSCALERS);
+        int minScale = CServiceBroker::GetSettings().GetInt(CSettings::SETTING_VIDEOPLAYER_HQSCALERS);
         if (scaleX < minScale && scaleY < minScale)
           return false;
         return true;
@@ -1126,12 +1074,12 @@ bool CWinRenderer::Supports(ESCALINGMETHOD method)
   return false;
 }
 
-EINTERLACEMETHOD CWinRenderer::AutoInterlaceMethod()
+bool CWinRenderer::WantsDoublePass()
 {
   if (m_renderMethod == RENDER_DXVA)
-    return VS_INTERLACEMETHOD_DXVA_BOB;
-  else
-    return VS_INTERLACEMETHOD_DEINTERLACE_HALF;
+    return true;
+
+  return false;
 }
 
 CRenderInfo CWinRenderer::GetRenderInfo()
@@ -1140,24 +1088,28 @@ CRenderInfo CWinRenderer::GetRenderInfo()
   info.formats = m_formats;
   info.max_buffer_size = NUM_BUFFERS;
   if (m_renderMethod == RENDER_DXVA && m_processor)
+  {
     info.optimal_buffer_size = m_processor->Size();
+    if (m_extended_format != RENDER_FMT_DXVA)
+      info.m_deintMethods.push_back(VS_INTERLACEMETHOD_DXVA_AUTO);
+  }
   else
-    info.optimal_buffer_size = 3;
+    info.optimal_buffer_size = 4;
   return info;
 }
 
 void CWinRenderer::ReleaseBuffer(int idx)
 {
   if (m_renderMethod == RENDER_DXVA && m_VideoBuffers[idx])
-    SAFE_RELEASE(((DXVABuffer*)m_VideoBuffers[idx])->pic);
+    SAFE_RELEASE(reinterpret_cast<DXVABuffer*>(m_VideoBuffers[idx])->pic);
 }
 
-bool CWinRenderer::NeedBufferForRef(int idx)
+bool CWinRenderer::NeedBuffer(int idx)
 {
   // check if processor wants to keep past frames
   if (m_renderMethod == RENDER_DXVA && m_processor)
   {
-    DXVABuffer** buffers = (DXVABuffer**)m_VideoBuffers;
+    DXVABuffer** buffers = reinterpret_cast<DXVABuffer**>(m_VideoBuffers);
 
     int numPast = m_processor->PastRefs();
     if (buffers[idx] && buffers[idx]->pic)
@@ -1190,7 +1142,7 @@ bool YUVBuffer::Create(ERenderFormat format, unsigned int width, unsigned int he
   {
   case RENDER_FMT_YUV420P10:
   case RENDER_FMT_YUV420P16:
-    { // D3DFMT_L16 -> DXGI_FORMAT_R16_UNORM
+    {
       if ( !planes[PLANE_Y].texture.Create(m_width,      m_height,      1, usage, DXGI_FORMAT_R16_UNORM)
         || !planes[PLANE_U].texture.Create(m_width >> 1, m_height >> 1, 1, usage, DXGI_FORMAT_R16_UNORM)
         || !planes[PLANE_V].texture.Create(m_width >> 1, m_height >> 1, 1, usage, DXGI_FORMAT_R16_UNORM))
@@ -1199,7 +1151,7 @@ bool YUVBuffer::Create(ERenderFormat format, unsigned int width, unsigned int he
       break;
     }
   case RENDER_FMT_YUV420P:
-    { // D3DFMT_L8 - > DXGI_FORMAT_R8_UNORM
+    {
       if ( !planes[PLANE_Y].texture.Create(m_width,      m_height,      1, usage, DXGI_FORMAT_R8_UNORM)
         || !planes[PLANE_U].texture.Create(m_width >> 1, m_height >> 1, 1, usage, DXGI_FORMAT_R8_UNORM)
         || !planes[PLANE_V].texture.Create(m_width >> 1, m_height >> 1, 1, usage, DXGI_FORMAT_R8_UNORM))
@@ -1209,7 +1161,7 @@ bool YUVBuffer::Create(ERenderFormat format, unsigned int width, unsigned int he
     }
   case RENDER_FMT_DXVA:
   case RENDER_FMT_NV12:
-    { // D3DFMT_L8 -> DXGI_FORMAT_R8_UNORM, D3DFMT_A8L8/D3DFMT_V8U8 -> DXGI_FORMAT_R8G8_UNORM / DXGI_FORMAT_R8G8_SNORM
+    {
       DXGI_FORMAT uvFormat = DXGI_FORMAT_R8G8_UNORM;
       // FL 9.x doesn't support DXGI_FORMAT_R8G8_UNORM, so we have to use SNORM and correct values in shader
       if (!g_Windowing.IsFormatSupport(uvFormat, D3D11_FORMAT_SUPPORT_TEXTURE2D))
@@ -1221,14 +1173,14 @@ bool YUVBuffer::Create(ERenderFormat format, unsigned int width, unsigned int he
       break;
     }
   case RENDER_FMT_YUYV422:
-    { // D3DFMT_A8R8G8B8 -> DXGI_FORMAT_B8G8R8A8_UNORM
+    {
       if ( !planes[PLANE_Y].texture.Create(m_width >> 1, m_height, 1, usage, DXGI_FORMAT_B8G8R8A8_UNORM))
         return false;
       m_activeplanes = 1;
       break;
     }
   case RENDER_FMT_UYVY422:
-    { // D3DFMT_A8R8G8B8 -> DXGI_FORMAT_B8G8R8A8_UNORM
+    {
       if ( !planes[PLANE_Y].texture.Create(m_width >> 1, m_height, 1, usage, DXGI_FORMAT_B8G8R8A8_UNORM))
         return false;
       m_activeplanes = 1;
@@ -1247,6 +1199,10 @@ void YUVBuffer::Release()
   SAFE_RELEASE(m_staging);
   for(unsigned i = 0; i < m_activeplanes; i++)
   {
+    // unlock before release
+    if (m_locked && planes[i].texture.Get() && planes[i].rect.pData)
+      planes[i].texture.UnlockRect(0);
+
     planes[i].texture.Release();
     memset(&planes[i].rect, 0, sizeof(planes[i].rect));
   }
@@ -1256,6 +1212,12 @@ void YUVBuffer::StartRender()
 {
   if (!m_locked)
     return;
+
+  if (m_bPending)
+  {
+    PerformCopy();
+    m_bPending = false;
+  }
 
   m_locked = false;
 
@@ -1274,6 +1236,7 @@ void YUVBuffer::StartDecode()
     return;
 
   m_locked = true;
+  m_bPending = false;
 
   for(unsigned i = 0; i < m_activeplanes; i++)
   {
@@ -1341,6 +1304,15 @@ bool YUVBuffer::IsReadyToRender()
   return !m_locked;
 }
 
+bool YUVBuffer::CopyFromPicture(DVDVideoPicture &picture)
+{
+  if (picture.format == RENDER_FMT_DXVA)
+  {
+    return CopyFromDXVA(reinterpret_cast<ID3D11VideoDecoderOutputView*>(picture.dxva->view));
+  }
+  return false;
+}
+
 bool YUVBuffer::CopyFromDXVA(ID3D11VideoDecoderOutputView* pView)
 {
   if (!pView)
@@ -1385,7 +1357,7 @@ bool YUVBuffer::CopyFromDXVA(ID3D11VideoDecoderOutputView* pView)
                                     resource,
                                     D3D11CalcSubresource(0, vpivd.Texture2D.ArraySlice, 1),
                                     nullptr);
-    PerformCopy();
+    m_bPending = true;
   }
   SAFE_RELEASE(resource);
 

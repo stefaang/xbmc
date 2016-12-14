@@ -48,8 +48,10 @@ public:
   enum AESyncState
   {
     SYNC_OFF,
-    SYNC_PLAY,
-    SYNC_ACTIVE
+    SYNC_INSYNC,
+    SYNC_START,
+    SYNC_MUTE,
+    SYNC_ADJUST
   };
   AESyncState state;
 };
@@ -79,7 +81,7 @@ public:
    * @param pts timestamp
    * @return The number of frames consumed
    */
-  virtual unsigned int AddData(uint8_t* const *data, unsigned int offset, unsigned int frames, double pts = 0.0) = 0;
+  virtual unsigned int AddData(const uint8_t* const *data, unsigned int offset, unsigned int frames, double pts = 0.0) = 0;
 
   /**
    * Returns the time in seconds that it will take
@@ -101,8 +103,8 @@ public:
   virtual bool IsBuffering() = 0;
 
   /**
-   * Returns the time in seconds that it will take
-   * to underrun the cache if no sample is added.
+   * Returns the time in seconds of the stream's
+   * cached audio samples. Engine buffers excluded.
    * @return seconds
    */
   virtual double GetCacheTime() = 0;

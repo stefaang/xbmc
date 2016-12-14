@@ -1,6 +1,6 @@
 /*
- *      Copyright (C) 2005-2014 Team XBMC
- *      http://xbmc.org
+ *      Copyright (C) 2005-2015 Team Kodi
+ *      http://kodi.tv
  *
  *  This Program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License
- *  along with XBMC; see the file COPYING.  If not, see
+ *  along with Kodi; see the file COPYING.  If not, see
  *  <http://www.gnu.org/licenses/>.
  *
  */
@@ -23,6 +23,7 @@
 #if defined(HAVE_X11)
 
 #include "WinSystemX11.h"
+#include "ServiceBroker.h"
 #include "settings/DisplaySettings.h"
 #include "settings/Settings.h"
 #include "settings/lib/Setting.h"
@@ -45,6 +46,8 @@
 
 #include "../WinEventsX11.h"
 #include "input/InputManager.h"
+
+using namespace KODI::MESSAGING;
 
 #define EGL_NO_CONFIG (EGLConfig)0
 
@@ -136,7 +139,7 @@ bool CWinSystemX11::DestroyWindow()
 
 bool CWinSystemX11::ResizeWindow(int newWidth, int newHeight, int newLeft, int newTop)
 {
-  m_userOutput = CSettings::GetInstance().GetString(CSettings::SETTING_VIDEOSCREEN_MONITOR);
+  m_userOutput = CServiceBroker::GetSettings().GetString(CSettings::SETTING_VIDEOSCREEN_MONITOR);
   XOutput *out = NULL;
   if (m_userOutput.compare("Default") != 0)
   {
@@ -153,7 +156,7 @@ bool CWinSystemX11::ResizeWindow(int newWidth, int newHeight, int newLeft, int n
   if (!out)
   {
     std::vector<XOutput> outputs = g_xrandr.GetModes();
-    if (outputs.size() > 0)
+    if (!outputs.empty())
     {
       m_userOutput = outputs[0].name;
     }
@@ -245,7 +248,7 @@ bool CWinSystemX11::SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool bl
         OnLostDevice();
         m_bIsInternalXrr = true;
         g_xrandr.SetMode(out, mode);
-        int delay = CSettings::GetInstance().GetInt("videoscreen.delayrefreshchange");
+        int delay = CServiceBroker::GetSettings().GetInt("videoscreen.delayrefreshchange");
         if (delay > 0)
         {
           m_delayDispReset = true;
@@ -274,8 +277,8 @@ void CWinSystemX11::UpdateResolutions()
   int numScreens = XScreenCount(m_dpy);
   g_xrandr.SetNumScreens(numScreens);
 
-  bool switchOnOff = CSettings::GetInstance().GetBool(CSettings::SETTING_VIDEOSCREEN_BLANKDISPLAYS);
-  m_userOutput = CSettings::GetInstance().GetString(CSettings::SETTING_VIDEOSCREEN_MONITOR);
+  bool switchOnOff = CServiceBroker::GetSettings().GetBool(CSettings::SETTING_VIDEOSCREEN_BLANKDISPLAYS);
+  m_userOutput = CServiceBroker::GetSettings().GetString(CSettings::SETTING_VIDEOSCREEN_MONITOR);
   if (m_userOutput.compare("Default") == 0)
     switchOnOff = false;
 
@@ -501,7 +504,7 @@ void CWinSystemX11::NotifyAppActiveChange(bool bActivated)
 {
   if (bActivated && m_bWasFullScreenBeforeMinimize && !m_bFullScreen)
   {
-    g_graphicsContext.ToggleFullScreenRoot();
+    CApplicationMessenger::GetInstance().PostMsg(TMSG_TOGGLEFULLSCREEN);
 
     m_bWasFullScreenBeforeMinimize = false;
   }
@@ -514,7 +517,7 @@ void CWinSystemX11::NotifyAppFocusChange(bool bGaining)
       !m_bFullScreen)
   {
     m_bWasFullScreenBeforeMinimize = false;
-    g_graphicsContext.ToggleFullScreenRoot();
+    CApplicationMessenger::GetInstance().PostMsg(TMSG_TOGGLEFULLSCREEN);
     m_minimized = false;
   }
   if (!bGaining)
@@ -527,7 +530,7 @@ bool CWinSystemX11::Minimize()
   if (m_bWasFullScreenBeforeMinimize)
   {
     m_bIgnoreNextFocusMessage = true;
-    g_graphicsContext.ToggleFullScreenRoot();
+    CApplicationMessenger::GetInstance().PostMsg(TMSG_TOGGLEFULLSCREEN);
   }
 
   XIconifyWindow(m_dpy, m_mainWindow, m_nScreen);
@@ -651,11 +654,6 @@ int CWinSystemX11::XErrorHandler(Display* dpy, XErrorEvent* error)
             buf, error->type, error->serial, (int)error->error_code, (int)error->request_code, (int)error->minor_code);
 
   return 0;
-}
-
-bool CWinSystemX11::EnableFrameLimiter()
-{
-  return m_minimized;
 }
 
 bool CWinSystemX11::SetWindow(int width, int height, bool fullscreen, const std::string &output, int *winstate)

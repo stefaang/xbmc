@@ -22,6 +22,7 @@
 
 #include "system.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFormats.h"
+#include "cores/VideoPlayer/Process/ProcessInfo.h"
 
 extern "C" {
 #include "libavcodec/avcodec.h"
@@ -29,14 +30,9 @@ extern "C" {
 
 #include <vector>
 #include <string>
+#include <map>
 
 class CSetting;
-
-struct DVDCodecAvailableType
-{
-  AVCodecID codec;
-  const char* setting;
-};
 
 // when modifying these structures, make sure you update all codecs accordingly
 #define FRAME_TYPE_UNDEF 0
@@ -53,8 +49,8 @@ class COpenMaxVideo;
 struct OpenMaxVideoBufferHolder;
 class CDVDMediaCodecInfo;
 class CDVDVideoCodecIMXBuffer;
-class CMMALVideoBuffer;
-class CAMLCodec;
+class CMMALBuffer;
+class CDVDAmlogicInfo;
 
 
 // should be entirely filled by all codecs
@@ -97,11 +93,11 @@ struct DVDVideoPicture
     };
 
     struct {
-      CMMALVideoBuffer *MMALBuffer;
+      CMMALBuffer *MMALBuffer;
     };
 
     struct {
-      CAMLCodec* amlcodec;
+      CDVDAmlogicInfo *amlcodec;
     };
 
   };
@@ -142,12 +138,14 @@ struct DVDVideoUserData
 #define DVP_FLAG_ALLOCATED          0x00000004  //< Set to indicate that this has allocated data
 #define DVP_FLAG_INTERLACED         0x00000008  //< Set to indicate that this frame is interlaced
 
-#define DVP_FLAG_NOSKIP             0x00000010  //< indicate this picture should never be dropped
-#define DVP_FLAG_DROPPED            0x00000020  //< indicate that this picture has been dropped in decoder stage, will have no data
+#define DVP_FLAG_DROPPED            0x00000010  //< indicate that this picture has been dropped in decoder stage, will have no data
 
 #define DVD_CODEC_CTRL_SKIPDEINT    0x01000000  //< indicate that this picture was requested to have been dropped in deint stage
 #define DVD_CODEC_CTRL_NO_POSTPROC  0x02000000  //< see GetCodecStats
-#define DVD_CODEC_CTRL_DRAIN        0x04000000  //< see GetCodecStats
+#define DVD_CODEC_CTRL_HURRY        0x04000000  //< see GetCodecStats
+#define DVD_CODEC_CTRL_DROP         0x08000000  //< this frame is going to be dropped in output
+#define DVD_CODEC_CTRL_DRAIN        0x10000000  //< squeeze out pictured without feeding new packets
+#define DVD_CODEC_CTRL_ROTATE       0x20000000  //< rotate if renderer does not support it
 
 // DVP_FLAG 0x00000100 - 0x00000f00 is in use by libmpeg2!
 
@@ -173,18 +171,13 @@ class CDVDCodecOptions;
 class CDVDVideoCodec
 {
 public:
-  CDVDVideoCodec() {}
+  CDVDVideoCodec(CProcessInfo &processInfo) : m_processInfo(processInfo) {}
   virtual ~CDVDVideoCodec() {}
 
   /**
    * Open the decoder, returns true on success
    */
   virtual bool Open(CDVDStreamInfo &hints, CDVDCodecOptions &options) = 0;
-
-  /**
-   * Dispose, Free all resources
-   */
-  virtual void Dispose() = 0;
 
   /**
    * returns one or a combination of VC_ messages
@@ -238,20 +231,6 @@ public:
    */
   virtual void SetSpeed(int iSpeed) {};
 
-  enum EFilterFlags {
-    FILTER_NONE                =  0x0,
-    FILTER_DEINTERLACE_YADIF   =  0x1,  //< use first deinterlace mode
-    FILTER_DEINTERLACE_ANY     =  0xf,  //< use any deinterlace mode
-    FILTER_DEINTERLACE_FLAGGED = 0x10,  //< only deinterlace flagged frames
-    FILTER_DEINTERLACE_HALFED  = 0x20,  //< do half rate deinterlacing
-    FILTER_ROTATE              = 0x40,  //< rotate image according to the codec hints
-  };
-
-  /**
-   * set the type of filters that should be applied at decoding stage if possible
-   */
-  virtual unsigned int SetFilters(unsigned int filters) { return 0; }
-
   /**
    * should return codecs name
    */
@@ -280,21 +259,24 @@ public:
   /**
    * Interact with user settings so that user disabled codecs are disabled
    */
-  static bool IsCodecDisabled(DVDCodecAvailableType* map, unsigned int size, AVCodecID id);
+  static bool IsCodecDisabled(const std::map<AVCodecID, std::string> &map, AVCodecID id);
 
   /**
    * For calculation of dropping requirements player asks for some information.
    * - pts : right after decoder, used to detect gaps (dropped frames in decoder)
-   * - droppedPics : indicates if decoder has dropped a picture
+   * - droppedFrames : indicates if decoder has dropped a frame
+   *                 -1 means that decoder has no info on this.
+   * - skippedPics : indicates if postproc has skipped a already decoded picture
    *                 -1 means that decoder has no info on this.
    *
    * If codec does not implement this method, pts of decoded frame at input
    * video player is used. In case decoder does post-proc and de-interlacing there
    * may be quite some frames queued up between exit decoder and entry player.
    */
-  virtual bool GetCodecStats(double &pts, int &droppedPics)
+  virtual bool GetCodecStats(double &pts, int &droppedFrames, int &skippedPics)
   {
-    droppedPics = -1;
+    droppedFrames = -1;
+    skippedPics = -1;
     return false;
   }
 
@@ -305,12 +287,20 @@ public:
    *                  if speed is not normal the codec can switch off
    *                  postprocessing and de-interlacing
    *
-   * DVD_CODEC_CTRL_DRAIN :
+   * DVD_CODEC_CTRL_HURRY :
    *                  codecs may do postprocessing and de-interlacing.
    *                  If video buffers in RenderManager are about to run dry,
    *                  this is signaled to codec. Codec can wait for post-proc
    *                  to be finished instead of returning empty and getting another
    *                  packet.
+   *
+   * DVD_CODEC_CTRL_DRAIN :
+   *                  instruct decoder to deliver last pictures without requesting
+   *                  new packets
+   *
+   * DVD_CODEC_CTRL_DROP :
+   *                  this packet is going to be dropped. decoder is free to use it
+   *                  for decoding
    *
    */
   virtual void SetCodecControl(int flags) {}
@@ -320,4 +310,7 @@ public:
    * Decoder request to re-open
    */
   virtual void Reopen() {};
+
+protected:
+  CProcessInfo &m_processInfo;
 };

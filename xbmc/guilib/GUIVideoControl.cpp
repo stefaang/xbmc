@@ -24,9 +24,6 @@
 #include "Application.h"
 #include "input/Key.h"
 #include "WindowIDs.h"
-#ifndef HAS_VIDEO_PLAYBACK
-#include "cores/DummyVideoPlayer.h"
-#endif
 
 CGUIVideoControl::CGUIVideoControl(int parentID, int controlID, float posX, float posY, float width, float height)
     : CGUIControl(parentID, controlID, posX, posY, width, height)
@@ -39,7 +36,7 @@ CGUIVideoControl::~CGUIVideoControl(void)
 
 void CGUIVideoControl::Process(unsigned int currentTime, CDirtyRegionList &dirtyregions)
 {
-  // TODO Proper processing which marks when its actually changed. Just mark always for now.
+  //! @todo Proper processing which marks when its actually changed. Just mark always for now.
   if (g_application.m_pPlayer->IsRenderingGuiLayer())
     MarkDirtyRegion();
 
@@ -63,7 +60,6 @@ void CGUIVideoControl::Render()
       CRect old = g_graphicsContext.GetScissors();
       CRect region = GetRenderRegion();
       region.Intersect(old);
-      g_graphicsContext.BeginPaint();
       g_graphicsContext.SetScissors(region);
 #ifdef HAS_IMXVPU
       g_graphicsContext.Clear((16 << 16)|(8 << 8)|16);
@@ -71,15 +67,14 @@ void CGUIVideoControl::Render()
       g_graphicsContext.Clear(0);
 #endif
       g_graphicsContext.SetScissors(old);
-      g_graphicsContext.EndPaint();
     }
     else
       g_application.m_pPlayer->Render(false, alpha);
 
     g_graphicsContext.RemoveTransform();
   }
-  // TODO: remove this crap: HAS_VIDEO_PLAYBACK
-  // instantiating a video control having no playback is complete nonsense
+  //! @todo remove this crap: HAS_VIDEO_PLAYBACK
+  //! instantiating a video control having no playback is complete nonsense
   CGUIControl::Render();
 }
 
@@ -98,14 +93,6 @@ EVENT_RESULT CGUIVideoControl::OnMouseEvent(const CPoint &point, const CMouseEve
   { // switch to fullscreen
     CGUIMessage message(GUI_MSG_FULLSCREEN, GetID(), GetParentID());
     g_windowManager.SendMessage(message);
-    return EVENT_RESULT_HANDLED;
-  }
-  else if (event.m_id == ACTION_MOUSE_RIGHT_CLICK)
-  { // toggle the playlist window
-    if (g_windowManager.GetActiveWindow() == WINDOW_VIDEO_PLAYLIST)
-      g_windowManager.PreviousWindow();
-    else
-      g_windowManager.ActivateWindow(WINDOW_VIDEO_PLAYLIST);
     return EVENT_RESULT_HANDLED;
   }
   return EVENT_RESULT_UNHANDLED;

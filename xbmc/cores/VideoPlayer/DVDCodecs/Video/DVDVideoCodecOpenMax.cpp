@@ -29,13 +29,14 @@
 #include "DVDStreamInfo.h"
 #include "DVDVideoCodecOpenMax.h"
 #include "OpenMaxVideo.h"
+#include "ServiceBroker.h"
 #include "utils/log.h"
 #include "settings/Settings.h"
 
 #define CLASSNAME "COpenMax"
 ////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////
-CDVDVideoCodecOpenMax::CDVDVideoCodecOpenMax() : CDVDVideoCodec()
+CDVDVideoCodecOpenMax::CDVDVideoCodecOpenMax(CProcessInfo &processInfo) : CDVDVideoCodec(processInfo)
 {
   m_omx_decoder = NULL;
   m_pFormatName = "omx-xxxx";
@@ -51,8 +52,11 @@ CDVDVideoCodecOpenMax::~CDVDVideoCodecOpenMax()
 
 bool CDVDVideoCodecOpenMax::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 {
+  if (hints.stills)
+    return false;
+
   // we always qualify even if DVDFactoryCodec does this too.
-  if (CSettings::GetInstance().GetBool(CSettings::SETTING_VIDEOPLAYER_USEOMX) && !hints.software)
+  if (CServiceBroker::GetSettings().GetBool(CSettings::SETTING_VIDEOPLAYER_USEOMX) && !hints.software)
   {
     m_convert_bitstream = false;
 
@@ -189,7 +193,7 @@ bool CDVDVideoCodecOpenMax::GetPicture(DVDVideoPicture* pDvdVideoPicture)
   m_omx_decoder->GetPicture(&m_videobuffer);
   *pDvdVideoPicture = m_videobuffer;
 
-  // TODO what's going on here? bool is required as return value.
+  //! @todo what's going on here? bool is required as return value.
   return VC_PICTURE | VC_BUFFER;
 }
 

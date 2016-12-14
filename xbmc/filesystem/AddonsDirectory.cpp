@@ -23,15 +23,22 @@
 #include <functional>
 #include <set>
 #include "AddonsDirectory.h"
+#include "ServiceBroker.h"
 #include "addons/AddonDatabase.h"
+#include "addons/AddonSystemSettings.h"
 #include "interfaces/generic/ScriptInvocationManager.h"
 #include "FileItem.h"
 #include "addons/AddonInstaller.h"
+#include "addons/BinaryAddonCache.h"
 #include "addons/PluginSource.h"
 #include "addons/RepositoryUpdater.h"
 #include "dialogs/GUIDialogOK.h"
+#include "games/addons/GameClient.h"
+#include "games/GameUtils.h"
 #include "guilib/TextureManager.h"
 #include "File.h"
+#include "ServiceBroker.h"
+#include "settings/Settings.h"
 #include "SpecialProtocol.h"
 #include "utils/URIUtils.h"
 #include "utils/StringUtils.h"
@@ -48,9 +55,14 @@ CAddonsDirectory::~CAddonsDirectory(void) {}
 
 const auto CATEGORY_INFO_PROVIDERS = "category.infoproviders";
 const auto CATEGORY_LOOK_AND_FEEL = "category.lookandfeel";
+const auto CATEGORY_GAME_ADDONS = "category.gameaddons";
+const auto CATEGORY_EMULATORS = "category.emulators";
+const auto CATEGORY_STANDALONE_GAMES = "category.standalonegames";
+const auto CATEGORY_GAME_PROVIDERS = "category.gameproviders";
+const auto CATEGORY_GAME_RESOURCES = "category.gameresources";
+const auto CATEGORY_GAME_SUPPORT_ADDONS = "category.gamesupport";
 
 const std::set<TYPE> dependencyTypes = {
-    ADDON_VIZ_LIBRARY,
     ADDON_SCRAPER_LIBRARY,
     ADDON_SCRIPT_LIBRARY,
     ADDON_SCRIPT_MODULE,
@@ -73,6 +85,13 @@ const std::set<TYPE> lookAndFeelTypes = {
   ADDON_VIZ,
 };
 
+const std::set<TYPE> gameTypes = {
+  ADDON_GAME_CONTROLLER,
+  ADDON_GAMEDLL,
+  ADDON_GAME,
+  ADDON_RESOURCE_GAMES,
+};
+
 static bool IsInfoProviderType(TYPE type)
 {
   return infoProviderTypes.find(type) != infoProviderTypes.end();
@@ -93,16 +112,51 @@ static bool IsLookAndFeelTypeAddon(const AddonPtr& addon)
   return IsLookAndFeelType(addon->Type());
 }
 
+static bool IsGameType(TYPE type)
+{
+  return gameTypes.find(type) != gameTypes.end();
+}
+
+static bool IsStandaloneGame(const AddonPtr& addon)
+{
+  return GAME::CGameUtils::IsStandaloneGame(addon);
+}
+
+static bool IsEmulator(const AddonPtr& addon)
+{
+  return addon->Type() == ADDON_GAMEDLL && std::static_pointer_cast<GAME::CGameClient>(addon)->SupportsPath();
+}
+
+static bool IsGameProvider(const AddonPtr& addon)
+{
+  return addon->Type() == ADDON_PLUGIN && addon->IsType(ADDON_GAME);
+}
+
+static bool IsGameResource(const AddonPtr& addon)
+{
+  return addon->Type() == ADDON_RESOURCE_GAMES;
+}
+
+static bool IsGameSupportAddon(const AddonPtr& addon)
+{
+  return addon->Type() == ADDON_GAMEDLL &&
+         !std::static_pointer_cast<GAME::CGameClient>(addon)->SupportsPath() &&
+         !std::static_pointer_cast<GAME::CGameClient>(addon)->SupportsStandalone();
+}
+
+static bool IsGameAddon(const AddonPtr& addon)
+{
+  return IsGameType(addon->Type()) ||
+         IsStandaloneGame(addon) ||
+         IsGameProvider(addon) ||
+         IsGameResource(addon) ||
+         IsGameSupportAddon(addon);
+}
+
 static bool IsDependecyType(TYPE type)
 {
   return dependencyTypes.find(type) != dependencyTypes.end();
 }
-
-static bool IsSystemAddon(const AddonPtr& addon)
-{
-  return StringUtils::StartsWith(addon->Path(), CSpecialProtocol::TranslatePath("special://xbmc/addons"));
-}
-
 
 static bool IsUserInstalled(const AddonPtr& addon)
 {
@@ -113,7 +167,7 @@ static bool IsUserInstalled(const AddonPtr& addon)
 
 static bool IsOrphaned(const AddonPtr& addon, const VECADDONS& all)
 {
-  if (IsSystemAddon(addon) || IsUserInstalled(addon))
+  if (CAddonMgr::GetInstance().IsSystemAddon(addon->ID()) || IsUserInstalled(addon))
     return false;
 
   for (const AddonPtr& other : all)
@@ -125,22 +179,6 @@ static bool IsOrphaned(const AddonPtr& addon, const VECADDONS& all)
   return true;
 }
 
-
-static void SetUpdateAvailProperties(CFileItemList &items)
-{
-  std::set<std::string> outdated;
-  for (const auto& addon : CAddonMgr::GetInstance().GetOutdated())
-    outdated.insert(addon->ID());
-
-  for (int i = 0; i < items.Size(); ++i)
-  {
-    if (outdated.find(items[i]->GetProperty("Addon.ID").asString()) != outdated.end())
-    {
-      items[i]->SetProperty("Addon.Status", g_localizeStrings.Get(24068));
-      items[i]->SetProperty("Addon.UpdateAvail", true);
-    }
-  }
-}
 
 // Creates categories from addon types, if we have any addons with that type.
 static void GenerateTypeListing(const CURL& path, const std::set<TYPE>& types,
@@ -163,6 +201,113 @@ static void GenerateTypeListing(const CURL& path, const std::set<TYPE>& types,
         items.Add(item);
         break;
       }
+    }
+  }
+}
+
+// Creates categories for game add-ons, if we have any game add-ons
+static void GenerateGameListing(const CURL& path, const VECADDONS& addons, CFileItemList& items)
+{
+  // Game controllers
+  for (const auto& addon : addons)
+  {
+    if (addon->Type() == ADDON_GAME_CONTROLLER)
+    {
+      CFileItemPtr item(new CFileItem(TranslateType(ADDON_GAME_CONTROLLER, true)));
+      CURL itemPath = path;
+      itemPath.SetFileName(TranslateType(ADDON_GAME_CONTROLLER, false));
+      item->SetPath(itemPath.Get());
+      item->m_bIsFolder = true;
+      std::string thumb = GetIcon(ADDON_GAME_CONTROLLER);
+      if (!thumb.empty() && g_TextureManager.HasTexture(thumb))
+        item->SetArt("thumb", thumb);
+      items.Add(item);
+      break;
+    }
+  }
+  // Emulators
+  for (const auto& addon : addons)
+  {
+    if (IsEmulator(addon))
+    {
+      CFileItemPtr item(new CFileItem(g_localizeStrings.Get(35207))); // Emulators
+      CURL itemPath = path;
+      itemPath.SetFileName(CATEGORY_EMULATORS);
+      item->SetPath(itemPath.Get());
+      item->m_bIsFolder = true;
+      std::string thumb = GetIcon(ADDON_GAMEDLL);
+      if (!thumb.empty() && g_TextureManager.HasTexture(thumb))
+        item->SetArt("thumb", thumb);
+      items.Add(item);
+      break;
+    }
+  }
+  // Standalone games
+  for (const auto& addon : addons)
+  {
+    if (IsStandaloneGame(addon))
+    {
+      CFileItemPtr item(new CFileItem(g_localizeStrings.Get(35208))); // Standalone games
+      CURL itemPath = path;
+      itemPath.SetFileName(CATEGORY_STANDALONE_GAMES);
+      item->SetPath(itemPath.Get());
+      item->m_bIsFolder = true;
+      std::string thumb = GetIcon(ADDON_GAMEDLL);
+      if (!thumb.empty() && g_TextureManager.HasTexture(thumb))
+        item->SetArt("thumb", thumb);
+      items.Add(item);
+      break;
+    }
+  }
+  // Game providers
+  for (const auto& addon : addons)
+  {
+    if (IsGameProvider(addon))
+    {
+      CFileItemPtr item(new CFileItem(g_localizeStrings.Get(35220))); // Game providers
+      CURL itemPath = path;
+      itemPath.SetFileName(CATEGORY_GAME_PROVIDERS);
+      item->SetPath(itemPath.Get());
+      item->m_bIsFolder = true;
+      std::string thumb = GetIcon(ADDON_GAMEDLL);
+      if (!thumb.empty() && g_TextureManager.HasTexture(thumb))
+        item->SetArt("thumb", thumb);
+      items.Add(item);
+      break;
+    }
+  }
+  // Game resources
+  for (const auto& addon : addons)
+  {
+    if (IsGameResource(addon))
+    {
+      CFileItemPtr item(new CFileItem(g_localizeStrings.Get(35209))); // Game resources
+      CURL itemPath = path;
+      itemPath.SetFileName(CATEGORY_GAME_RESOURCES);
+      item->SetPath(itemPath.Get());
+      item->m_bIsFolder = true;
+      std::string thumb = GetIcon(ADDON_GAMEDLL);
+      if (!thumb.empty() && g_TextureManager.HasTexture(thumb))
+        item->SetArt("thumb", thumb);
+      items.Add(item);
+      break;
+    }
+  }
+  // Game support add-ons
+  for (const auto& addon : addons)
+  {
+    if (IsGameSupportAddon(addon))
+    {
+      CFileItemPtr item(new CFileItem(g_localizeStrings.Get(35216))); // Support add-ons
+      CURL itemPath = path;
+      itemPath.SetFileName(CATEGORY_GAME_SUPPORT_ADDONS);
+      item->SetPath(itemPath.Get());
+      item->m_bIsFolder = true;
+      std::string thumb = GetIcon(ADDON_GAMEDLL);
+      if (!thumb.empty() && g_TextureManager.HasTexture(thumb))
+        item->SetArt("thumb", thumb);
+      items.Add(item);
+      break;
     }
   }
 }
@@ -191,12 +336,22 @@ static void GenerateMainCategoryListing(const CURL& path, const VECADDONS& addon
       item->SetArt("thumb", thumb);
     items.Add(item);
   }
+  if (std::any_of(addons.begin(), addons.end(), IsGameAddon))
+  {
+    CFileItemPtr item(new CFileItem(TranslateType(ADDON_GAME, true)));
+    item->SetPath(URIUtils::AddFileToFolder(path.Get(), CATEGORY_GAME_ADDONS));
+    item->m_bIsFolder = true;
+    const std::string thumb = GetIcon(ADDON_GAME);
+    if (g_TextureManager.HasTexture(thumb))
+      item->SetArt("thumb", thumb);
+    items.Add(item);
+  }
 
   std::set<TYPE> uncategorized;
   for (unsigned int i = ADDON_UNKNOWN + 1; i < ADDON_MAX - 1; ++i)
   {
     const TYPE type = (TYPE)i;
-    if (!IsInfoProviderType(type) && !IsLookAndFeelType(type) && !IsDependecyType(type))
+    if (!IsInfoProviderType(type) && !IsLookAndFeelType(type) && !IsDependecyType(type) && !IsGameType(type))
       uncategorized.insert(static_cast<TYPE>(i));
   }
   GenerateTypeListing(path, uncategorized, addons, items);
@@ -218,6 +373,47 @@ static void GenerateCategoryListing(const CURL& path, VECADDONS& addons,
     items.SetProperty("addoncategory", g_localizeStrings.Get(24997));
     items.SetLabel(g_localizeStrings.Get(24997));
     GenerateTypeListing(path, lookAndFeelTypes, addons, items);
+  }
+  else if (category == CATEGORY_GAME_ADDONS)
+  {
+    items.SetProperty("addoncategory", TranslateType(ADDON_GAME, true));
+    items.SetLabel(TranslateType(ADDON_GAME, true));
+    GenerateGameListing(path, addons, items);
+  }
+  else if (category == CATEGORY_EMULATORS)
+  {
+    items.SetProperty("addoncategory", g_localizeStrings.Get(35207)); // Emulators
+    addons.erase(std::remove_if(addons.begin(), addons.end(),
+        [](const AddonPtr& addon){ return !IsEmulator(addon); }), addons.end());
+    CAddonsDirectory::GenerateAddonListing(path, addons, items, g_localizeStrings.Get(35207)); // Emulators
+  }
+  else if (category == CATEGORY_STANDALONE_GAMES)
+  {
+    items.SetProperty("addoncategory", g_localizeStrings.Get(35208)); // Standalone games
+    addons.erase(std::remove_if(addons.begin(), addons.end(),
+        [](const AddonPtr& addon){ return !IsStandaloneGame(addon); }), addons.end());
+    CAddonsDirectory::GenerateAddonListing(path, addons, items, g_localizeStrings.Get(35208)); // Standalone games
+  }
+  else if (category == CATEGORY_GAME_PROVIDERS)
+  {
+    items.SetProperty("addoncategory", g_localizeStrings.Get(35220)); // Game providers
+    addons.erase(std::remove_if(addons.begin(), addons.end(),
+                                [](const AddonPtr& addon){ return !IsGameProvider(addon); }), addons.end());
+    CAddonsDirectory::GenerateAddonListing(path, addons, items, g_localizeStrings.Get(35220)); // Game providers
+  }
+  else if (category == CATEGORY_GAME_RESOURCES)
+  {
+    items.SetProperty("addoncategory", g_localizeStrings.Get(35209)); // Game resources
+    addons.erase(std::remove_if(addons.begin(), addons.end(),
+                                [](const AddonPtr& addon){ return !IsGameResource(addon); }), addons.end());
+    CAddonsDirectory::GenerateAddonListing(path, addons, items, g_localizeStrings.Get(35209)); // Game resources
+  }
+  else if (category == CATEGORY_GAME_SUPPORT_ADDONS)
+  {
+    items.SetProperty("addoncategory", g_localizeStrings.Get(35216)); // Support add-ons
+    addons.erase(std::remove_if(addons.begin(), addons.end(),
+      [](const AddonPtr& addon) { return !IsGameSupportAddon(addon); }), addons.end());
+    CAddonsDirectory::GenerateAddonListing(path, addons, items, g_localizeStrings.Get(35216)); // Support add-ons
   }
   else
   { // fallback to addon type
@@ -253,8 +449,7 @@ static void UserInstalledAddons(const CURL& path, CFileItemList &items)
   items.SetLabel(g_localizeStrings.Get(24998));
 
   VECADDONS addons;
-  CAddonMgr::GetInstance().GetAllAddons(addons, true);
-  CAddonMgr::GetInstance().GetAllAddons(addons, false);
+  CAddonMgr::GetInstance().GetInstalledAddons(addons);
   addons.erase(std::remove_if(addons.begin(), addons.end(),
                               std::not1(std::ptr_fun(IsUserInstalled))), addons.end());
   if (addons.empty())
@@ -276,56 +471,43 @@ static void UserInstalledAddons(const CURL& path, CFileItemList &items)
     items.Add(item);
   }
   else if (category == "all")
-  {
     CAddonsDirectory::GenerateAddonListing(path, addons, items, g_localizeStrings.Get(24998));
-    SetUpdateAvailProperties(items);
-  }
   else
-  {
     GenerateCategoryListing(path, addons, items);
-    SetUpdateAvailProperties(items);
-  }
 }
 
 static void DependencyAddons(const CURL& path, CFileItemList &items)
 {
   VECADDONS all;
-  CAddonMgr::GetInstance().GetAllAddons(all, true);
-  CAddonMgr::GetInstance().GetAllAddons(all, false);
+  CAddonMgr::GetInstance().GetInstalledAddons(all);
 
   VECADDONS deps;
   std::copy_if(all.begin(), all.end(), std::back_inserter(deps),
-      [&](const AddonPtr& _){ return !IsUserInstalled(_) && !IsOrphaned(_, all); });
+      [&](const AddonPtr& _){ return !IsUserInstalled(_); });
 
   CAddonsDirectory::GenerateAddonListing(path, deps, items, g_localizeStrings.Get(24996));
-  SetUpdateAvailProperties(items);
-}
 
-static void OrphanedAddons(const CURL& path, CFileItemList &items)
-{
-  VECADDONS all;
-  CAddonMgr::GetInstance().GetAllAddons(all, true);
-  CAddonMgr::GetInstance().GetAllAddons(all, false);
+  //Set orphaned status
+  std::set<std::string> orphaned;
+  for (const auto& addon : deps)
+  {
+    if (IsOrphaned(addon, all))
+      orphaned.insert(addon->ID());
+  }
 
-  VECADDONS orphaned;
-  std::copy_if(all.begin(), all.end(), std::back_inserter(orphaned),
-      [&](const AddonPtr& _){ return IsOrphaned(_, all); });
-
-  CAddonsDirectory::GenerateAddonListing(path, orphaned, items, g_localizeStrings.Get(24995));
-}
-
-static bool HaveOrphaned()
-{
-  VECADDONS addons;
-  CAddonMgr::GetInstance().GetAllAddons(addons, true);
-  CAddonMgr::GetInstance().GetAllAddons(addons, false);
-  return std::any_of(addons.begin(), addons.end(),
-                     [&](const AddonPtr& _){ return IsOrphaned(_, addons); });
+  for (int i = 0; i < items.Size(); ++i)
+  {
+    if (orphaned.find(items[i]->GetProperty("Addon.ID").asString()) != orphaned.end())
+    {
+      items[i]->SetProperty("Addon.Status", g_localizeStrings.Get(24995));
+      items[i]->SetProperty("Addon.Orphaned", true);
+    }
+  }
 }
 
 static void OutdatedAddons(const CURL& path, CFileItemList &items)
 {
-  VECADDONS addons = CAddonMgr::GetInstance().GetOutdated();
+  VECADDONS addons = CAddonMgr::GetInstance().GetAvailableUpdates();
   CAddonsDirectory::GenerateAddonListing(path, addons, items, g_localizeStrings.Get(24043));
 
   if (items.Size() > 1)
@@ -340,7 +522,7 @@ static void OutdatedAddons(const CURL& path, CFileItemList &items)
 static void RunningAddons(const CURL& path, CFileItemList &items)
 {
   VECADDONS addons;
-  CAddonMgr::GetInstance().GetAddons(ADDON_SERVICE, addons);
+  CAddonMgr::GetInstance().GetAddons(addons, ADDON_SERVICE);
 
   addons.erase(std::remove_if(addons.begin(), addons.end(),
       [](const AddonPtr& addon){ return !CScriptInvocationManager::GetInstance().IsRunning(addon->LibPath()); }), addons.end());
@@ -352,11 +534,12 @@ static bool Browse(const CURL& path, CFileItemList &items)
   const std::string repo = path.GetHostName();
 
   VECADDONS addons;
+  items.SetPath(path.Get());
   if (repo == "all")
   {
     CAddonDatabase database;
-    database.Open();
-    database.GetAddons(addons);
+    if (!database.Open() || !database.GetRepositoryContent(addons))
+      return false;
     items.SetProperty("reponame", g_localizeStrings.Get(24087));
     items.SetLabel(g_localizeStrings.Get(24087));
   }
@@ -393,56 +576,94 @@ static bool Browse(const CURL& path, CFileItemList &items)
   return true;
 }
 
+static bool GetRecentlyUpdatedAddons(VECADDONS& addons)
+{
+  if (!CAddonMgr::GetInstance().GetInstalledAddons(addons))
+    return false;
+
+  auto limit = CDateTime::GetCurrentDateTime() - CDateTimeSpan(14, 0, 0, 0);
+  auto isOld = [limit](const AddonPtr& addon){ return addon->LastUpdated() < limit; };
+  addons.erase(std::remove_if(addons.begin(), addons.end(), isOld), addons.end());
+  return true;
+}
+
+static bool HasRecentlyUpdatedAddons()
+{
+  VECADDONS addons;
+  return GetRecentlyUpdatedAddons(addons) && !addons.empty();
+}
 
 static bool Repos(const CURL& path, CFileItemList &items)
 {
   items.SetLabel(g_localizeStrings.Get(24033));
-  items.SetContent("addons");
 
   VECADDONS addons;
-  CAddonMgr::GetInstance().GetAddons(ADDON_REPOSITORY, addons, true);
+  CAddonMgr::GetInstance().GetAddons(addons, ADDON_REPOSITORY);
   if (addons.empty())
     return true;
   else if (addons.size() == 1)
     return Browse(CURL("addons://" + addons[0]->ID()), items);
-  else
-  {
-    CFileItemPtr item(new CFileItem("addons://all/", true));
-    item->SetLabel(g_localizeStrings.Get(24087));
-    item->SetSpecialSort(SortSpecialOnTop);
-    items.Add(item);
-  }
-
+  CFileItemPtr item(new CFileItem("addons://all/", true));
+  item->SetLabel(g_localizeStrings.Get(24087));
+  item->SetSpecialSort(SortSpecialOnTop);
+  items.Add(item);
   for (const auto& repo : addons)
   {
     CFileItemPtr item = CAddonsDirectory::FileItemFromAddon(repo, "addons://" + repo->ID(), true);
-    CAddonDatabase::SetPropertiesFromAddon(repo, item);
     items.Add(item);
   }
+  items.SetContent("addons");
   return true;
 }
 
-static void Manage(CFileItemList &items)
+static void RootDirectory(CFileItemList& items)
 {
-  items.SetLabel(g_localizeStrings.Get(24992));
-
+  items.SetLabel(g_localizeStrings.Get(10040));
   {
-    CFileItemPtr item(new CFileItem("addons://dependencies/", true));
-    item->SetLabel(g_localizeStrings.Get(24996));
-    item->SetSpecialSort(SortSpecialOnTop);
+    CFileItemPtr item(new CFileItem("addons://user/", true));
+    item->SetLabel(g_localizeStrings.Get(24998));
+    item->SetIconImage("DefaultAddonsInstalled.png");
     items.Add(item);
   }
-  if (HaveOrphaned())
+  if (CAddonMgr::GetInstance().HasAvailableUpdates())
   {
-    CFileItemPtr item(new CFileItem("addons://orphaned/", true));
-    item->SetLabel(g_localizeStrings.Get(24995));
-    item->SetSpecialSort(SortSpecialOnTop);
+    CFileItemPtr item(new CFileItem("addons://outdated/", true));
+    item->SetLabel(g_localizeStrings.Get(24043));
+    item->SetIconImage("DefaultAddonsUpdates.png");
+    items.Add(item);
+  }
+  if (CAddonInstaller::GetInstance().IsDownloading())
+  {
+    CFileItemPtr item(new CFileItem("addons://downloading/", true));
+    item->SetLabel(g_localizeStrings.Get(24067));
+    item->SetIconImage("DefaultNetwork.png");
+    items.Add(item);
+  }
+  if (CServiceBroker::GetSettings().GetInt(CSettings::SETTING_ADDONS_AUTOUPDATES) == ADDON::AUTO_UPDATES_ON
+      && HasRecentlyUpdatedAddons())
+  {
+    CFileItemPtr item(new CFileItem("addons://recently_updated/", true));
+    item->SetLabel(g_localizeStrings.Get(24004));
+    item->SetIconImage("DefaultAddonsRecentlyUpdated.png");
+    items.Add(item);
+  }
+  if (CAddonMgr::GetInstance().HasAddons(ADDON_REPOSITORY))
+  {
+    CFileItemPtr item(new CFileItem("addons://repos/", true));
+    item->SetLabel(g_localizeStrings.Get(24033));
+    item->SetIconImage("DefaultAddonsRepo.png");
     items.Add(item);
   }
   {
-    CFileItemPtr item(new CFileItem("addons://running/", true));
-    item->SetLabel(g_localizeStrings.Get(24994));
-    item->SetSpecialSort(SortSpecialOnTop);
+    CFileItemPtr item(new CFileItem("addons://install/", false));
+    item->SetLabel(g_localizeStrings.Get(24041));
+    item->SetIconImage("DefaultAddonsZip.png");
+    items.Add(item);
+  }
+  {
+    CFileItemPtr item(new CFileItem("addons://search/", true));
+    item->SetLabel(g_localizeStrings.Get(137));
+    item->SetIconImage("DefaultAddonsSearch.png");
     items.Add(item);
   }
 }
@@ -453,10 +674,17 @@ bool CAddonsDirectory::GetDirectory(const CURL& url, CFileItemList &items)
   URIUtils::RemoveSlashAtEnd(tmp);
   CURL path(tmp);
   const std::string endpoint = path.GetHostName();
+  items.ClearItems();
   items.ClearProperties();
+  items.SetCacheToDisc(CFileItemList::CACHE_NEVER);
   items.SetPath(path.Get());
 
-  if (endpoint == "user")
+  if (endpoint.empty())
+  {
+    RootDirectory(items);
+    return true;
+  }
+  else if (endpoint == "user")
   {
     UserInstalledAddons(path, items);
     return true;
@@ -464,11 +692,6 @@ bool CAddonsDirectory::GetDirectory(const CURL& url, CFileItemList &items)
   else if (endpoint == "dependencies")
   {
     DependencyAddons(path, items);
-    return true;
-  }
-  else if (endpoint == "orphaned")
-  {
-    OrphanedAddons(path, items);
     return true;
   }
   // PVR & adsp hardcodes this view so keep for compatibility
@@ -484,7 +707,7 @@ bool CAddonsDirectory::GetDirectory(const CURL& url, CFileItemList &items)
     else
       type = ADDON_UNKNOWN;
 
-    if (type != ADDON_UNKNOWN && CAddonMgr::GetInstance().GetAddons(type, addons, false))
+    if (type != ADDON_UNKNOWN && CAddonMgr::GetInstance().GetInstalledAddons(addons, type))
     {
       CAddonsDirectory::GenerateAddonListing(path, addons, items, TranslateType(type, true));
       return true;
@@ -513,10 +736,31 @@ bool CAddonsDirectory::GetDirectory(const CURL& url, CFileItemList &items)
   {
     return GetSearchResults(path, items);
   }
-  else if (endpoint == "manage")
+  else if (endpoint == "recently_updated")
   {
-    Manage(items);
+    VECADDONS addons;
+    if (!GetRecentlyUpdatedAddons(addons))
+      return false;
+
+    CAddonsDirectory::GenerateAddonListing(path, addons, items, g_localizeStrings.Get(24004));
     return true;
+
+  }
+  else if (endpoint == "downloading")
+  {
+    VECADDONS addons;
+    CAddonInstaller::GetInstance().GetInstallList(addons);
+    CAddonsDirectory::GenerateAddonListing(path, addons, items, g_localizeStrings.Get(24067));
+    return true;
+  }
+  else if (endpoint == "more")
+  {
+    std::string type = path.GetFileName();
+    if (type == "video" || type == "audio" || type == "image" || type == "executable")
+      return Browse(CURL("addons://all/xbmc.addon." + type), items);
+    else if (type == "game")
+      return Browse(CURL("addons://all/category.gameaddons"), items);
+    return false;
   }
   else
   {
@@ -539,6 +783,10 @@ bool CAddonsDirectory::IsRepoDirectory(const CURL& url)
 void CAddonsDirectory::GenerateAddonListing(const CURL &path,
     const VECADDONS& addons, CFileItemList &items, const std::string label)
 {
+  std::set<std::string> outdated;
+  for (const auto& addon : CAddonMgr::GetInstance().GetAvailableUpdates())
+    outdated.insert(addon->ID());
+
   items.ClearItems();
   items.SetContent("addons");
   items.SetLabel(label);
@@ -548,22 +796,24 @@ void CAddonsDirectory::GenerateAddonListing(const CURL &path,
     itemPath.SetFileName(addon->ID());
     CFileItemPtr pItem = FileItemFromAddon(addon, itemPath.Get(), false);
 
-    AddonPtr installedAddon;
-    if (CAddonMgr::GetInstance().GetAddon(addon->ID(), installedAddon))
-      pItem->SetProperty("Addon.Status",g_localizeStrings.Get(305));
-    else if (CAddonMgr::GetInstance().IsAddonDisabled(addon->ID()))
-      pItem->SetProperty("Addon.Status",g_localizeStrings.Get(24023));
+    AddonPtr localAddon;
+    bool installed = CAddonMgr::GetInstance().GetAddon(addon->ID(), localAddon, ADDON_UNKNOWN, false);
+    bool disabled = CAddonMgr::GetInstance().IsAddonDisabled(addon->ID());
+    bool hasUpdate = outdated.find(addon->ID()) != outdated.end();
 
-    if (addon->Props().broken == "DEPSNOTMET")
-      pItem->SetProperty("Addon.Status",g_localizeStrings.Get(24049));
-    else if (!addon->Props().broken.empty())
-      pItem->SetProperty("Addon.Status",g_localizeStrings.Get(24098));
-    if (installedAddon && installedAddon->Version() < addon->Version())
-    {
-      pItem->SetProperty("Addon.Status",g_localizeStrings.Get(24068));
-      pItem->SetProperty("Addon.UpdateAvail", true);
-    }
-    CAddonDatabase::SetPropertiesFromAddon(addon,pItem);
+    pItem->SetProperty("Addon.IsInstalled", installed);
+    pItem->SetProperty("Addon.IsEnabled", installed && !disabled);
+    pItem->SetProperty("Addon.HasUpdate", hasUpdate);
+
+    if (installed)
+      pItem->SetProperty("Addon.Status", g_localizeStrings.Get(305));
+    if (disabled)
+      pItem->SetProperty("Addon.Status", g_localizeStrings.Get(24023));
+    if (hasUpdate)
+      pItem->SetProperty("Addon.Status", g_localizeStrings.Get(24068));
+    else if (!addon->Broken().empty())
+      pItem->SetProperty("Addon.Status", g_localizeStrings.Get(24098));
+
     items.Add(pItem);
   }
 }
@@ -574,18 +824,26 @@ CFileItemPtr CAddonsDirectory::FileItemFromAddon(const AddonPtr &addon,
   if (!addon)
     return CFileItemPtr();
 
-  CFileItemPtr item(new CFileItem(path, folder));
+  CFileItemPtr item(new CFileItem(addon));
+  item->m_bIsFolder = folder;
+  item->SetPath(path);
 
   std::string strLabel(addon->Name());
   if (CURL(path).GetHostName() == "search")
     strLabel = StringUtils::Format("%s - %s", TranslateType(addon->Type(), true).c_str(), addon->Name().c_str());
   item->SetLabel(strLabel);
   item->SetArt("thumb", addon->Icon());
-  item->SetLabelPreformated(true);
   item->SetIconImage("DefaultAddon.png");
   if (URIUtils::IsInternetStream(addon->FanArt()) || CFile::Exists(addon->FanArt()))
     item->SetArt("fanart", addon->FanArt());
-  CAddonDatabase::SetPropertiesFromAddon(addon, item);
+
+  //! @todo fix hacks that depends on these
+  item->SetProperty("Addon.ID", addon->ID());
+  item->SetProperty("Addon.Name", addon->Name());
+  const auto it = addon->ExtraInfo().find("language");
+  if (it != addon->ExtraInfo().end())
+    item->SetProperty("Addon.Language", it->second);
+
   return item;
 }
 
@@ -596,7 +854,7 @@ bool CAddonsDirectory::GetScriptsAndPlugins(const std::string &content, VECADDON
     return false;
 
   VECADDONS tempAddons;
-  CAddonMgr::GetInstance().GetAddons(ADDON_PLUGIN, tempAddons);
+  CAddonMgr::GetInstance().GetAddons(tempAddons, ADDON_PLUGIN);
   for (unsigned i=0; i<tempAddons.size(); i++)
   {
     PluginPtr plugin = std::dynamic_pointer_cast<CPluginSource>(tempAddons[i]);
@@ -604,57 +862,77 @@ bool CAddonsDirectory::GetScriptsAndPlugins(const std::string &content, VECADDON
       addons.push_back(tempAddons[i]);
   }
   tempAddons.clear();
-  CAddonMgr::GetInstance().GetAddons(ADDON_SCRIPT, tempAddons);
+  CAddonMgr::GetInstance().GetAddons(tempAddons, ADDON_SCRIPT);
   for (unsigned i=0; i<tempAddons.size(); i++)
   {
     PluginPtr plugin = std::dynamic_pointer_cast<CPluginSource>(tempAddons[i]);
     if (plugin && plugin->Provides(type))
       addons.push_back(tempAddons[i]);
   }
+  tempAddons.clear();
+
+  if (type == CPluginSource::GAME)
+  {
+    CAddonMgr::GetInstance().GetAddons(tempAddons, ADDON_GAMEDLL);
+    for (auto& addon : tempAddons)
+    {
+      if (IsStandaloneGame(addon))
+        addons.push_back(addon);
+    }
+  }
+
   return true;
 }
 
 bool CAddonsDirectory::GetScriptsAndPlugins(const std::string &content, CFileItemList &items)
 {
-  items.Clear();
-
   VECADDONS addons;
   if (!GetScriptsAndPlugins(content, addons))
     return false;
 
-  for (VECADDONS::const_iterator it = addons.begin(); it != addons.end(); ++it)
+  for (AddonPtr& addon : addons)
   {
-    const AddonPtr addon = *it;
-    const std::string prot = addon->Type() == ADDON_PLUGIN ? "plugin://" : "script://";
-    CFileItemPtr item(FileItemFromAddon(addon, prot + addon->ID(), addon->Type() == ADDON_PLUGIN));
-    PluginPtr plugin = std::dynamic_pointer_cast<CPluginSource>(addon);
-    if (plugin->ProvidesSeveral())
-    {
-      CURL url = item->GetURL();
-      std::string opt = StringUtils::Format("?content_type=%s",content.c_str());
-      url.SetOptions(opt);
-      item->SetURL(url);
-    }
-    items.Add(item);
-  }
+    const bool bIsFolder = (addon->Type() == ADDON_PLUGIN);
 
-  items.Add(GetMoreItem(content));
+    std::string path;
+    switch (addon->Type())
+    {
+      case ADDON_PLUGIN:
+      {
+        path = "plugin://" + addon->ID();
+        PluginPtr plugin = std::dynamic_pointer_cast<CPluginSource>(addon);
+        if (plugin && plugin->ProvidesSeveral())
+        {
+          CURL url(path);
+          std::string opt = StringUtils::Format("?content_type=%s", content.c_str());
+          url.SetOptions(opt);
+          path = url.Get();
+        }
+        break;
+      }
+      case ADDON_SCRIPT:
+      {
+        path = "script://" + addon->ID();
+        break;
+      }
+      case ADDON_GAMEDLL:
+      {
+        // Kodi fails to launch games with empty path from home screen
+        path = "game://" + addon->ID();
+        break;
+      }
+      default:
+        break;
+    }
+
+    items.Add(FileItemFromAddon(addon, path, bIsFolder));
+  }
 
   items.SetContent("addons");
   items.SetLabel(g_localizeStrings.Get(24001)); // Add-ons
 
-  return items.Size() > 0;
+  return true;
 }
 
-CFileItemPtr CAddonsDirectory::GetMoreItem(const std::string &content)
-{
-  CFileItemPtr item(new CFileItem("addons://more/"+content,false));
-  item->SetLabelPreformated(true);
-  item->SetLabel(g_localizeStrings.Get(21452));
-  item->SetIconImage("DefaultAddon.png");
-  item->SetSpecialSort(SortSpecialOnBottom);
-  return item;
-}
-  
 }
 

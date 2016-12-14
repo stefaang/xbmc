@@ -72,7 +72,7 @@ CRenderInfo CRendererVAAPI::GetRenderInfo()
   info.formats = m_formats;
   info.max_buffer_size = NUM_BUFFERS;
   if (m_format == RENDER_FMT_VAAPINV12)
-    info.optimal_buffer_size = 3;
+    info.optimal_buffer_size = 4;
   else
     info.optimal_buffer_size = 5;
   return info;
@@ -81,14 +81,6 @@ CRenderInfo CRendererVAAPI::GetRenderInfo()
 bool CRendererVAAPI::Supports(ERENDERFEATURE feature)
 {
   return CLinuxRendererGL::Supports(feature);
-}
-
-bool CRendererVAAPI::Supports(EINTERLACEMETHOD method)
-{
-  VAAPI::CVaapiRenderPicture *vaapiPic = (VAAPI::CVaapiRenderPicture*)m_buffers[m_iYV12RenderBuffer].hwDec;
-  if(vaapiPic && vaapiPic->vaapi)
-    return vaapiPic->vaapi->Supports(method);
-  return false;
 }
 
 bool CRendererVAAPI::Supports(ESCALINGMETHOD method)
@@ -210,5 +202,13 @@ bool CRendererVAAPI::UploadTexture(int index)
   return true;
 }
 
+void CRendererVAAPI::AfterRenderHook(int idx)
+{
+  YUVBUFFER &buf = m_buffers[idx];
+  if (buf.hwDec)
+  {
+    ((VAAPI::CVaapiRenderPicture*)buf.hwDec)->Sync();
+  }
+}
 
 #endif

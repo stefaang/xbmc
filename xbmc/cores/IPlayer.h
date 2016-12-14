@@ -21,25 +21,23 @@
  */
 
 #include "system.h" // until we get sane int types used here
-#include <memory>
+#include <vector>
+#include <string>
+
 #include "IPlayerCallback.h"
 #include "guilib/Geometry.h"
 #include "guilib/Resolution.h"
-#include <string>
+#include "pvr/PVRTypes.h"
 
 #define CURRENT_STREAM -1
+#define CAPTUREFLAG_CONTINUOUS  0x01 //after a render is done, render a new one immediately
+#define CAPTUREFLAG_IMMEDIATELY 0x02 //read out immediately after render, this can cause a busy wait
+#define CAPTUREFORMAT_BGRA 0x01
 
 struct TextCacheStruct_t;
 class TiXmlElement;
 class CStreamDetails;
 class CAction;
-class CRenderCapture;
-
-namespace PVR
-{
-  class CPVRChannel;
-  typedef std::shared_ptr<PVR::CPVRChannel> CPVRChannelPtr;
-}
 
 class CPlayerOptions
 {
@@ -82,6 +80,7 @@ enum IPlayerSubtitleCapabilities
 
 struct SPlayerAudioStreamInfo
 {
+  bool valid;
   int bitrate;
   int channels;
   int samplerate;
@@ -92,6 +91,7 @@ struct SPlayerAudioStreamInfo
 
   SPlayerAudioStreamInfo()
   {
+    valid = false;
     bitrate = 0;
     channels = 0;
     samplerate = 0;
@@ -107,6 +107,7 @@ struct SPlayerSubtitleStreamInfo
 
 struct SPlayerVideoStreamInfo
 {
+  bool valid;
   int bitrate;
   float videoAspectRatio;
   int height;
@@ -120,6 +121,7 @@ struct SPlayerVideoStreamInfo
 
   SPlayerVideoStreamInfo()
   {
+    valid = false;
     bitrate = 0;
     videoAspectRatio = 1.0f;
     height = 0;
@@ -127,29 +129,19 @@ struct SPlayerVideoStreamInfo
   }
 };
 
-enum EDEINTERLACEMODE
-{
-  VS_DEINTERLACEMODE_OFF=0,
-  VS_DEINTERLACEMODE_AUTO=1,
-  VS_DEINTERLACEMODE_FORCE=2
-};
-
 enum EINTERLACEMETHOD
 {
-  VS_INTERLACEMETHOD_NONE=0, // Legacy
+  VS_INTERLACEMETHOD_NONE=0,
   VS_INTERLACEMETHOD_AUTO=1,
   VS_INTERLACEMETHOD_RENDER_BLEND=2,
 
-  VS_INTERLACEMETHOD_RENDER_WEAVE_INVERTED=3,
   VS_INTERLACEMETHOD_RENDER_WEAVE=4,
 
-  VS_INTERLACEMETHOD_RENDER_BOB_INVERTED=5,
   VS_INTERLACEMETHOD_RENDER_BOB=6,
 
   VS_INTERLACEMETHOD_DEINTERLACE=7,
 
   VS_INTERLACEMETHOD_VDPAU_BOB=8,
-  VS_INTERLACEMETHOD_INVERSE_TELECINE=9,
 
   VS_INTERLACEMETHOD_VDPAU_INVERSE_TELECINE=11,
   VS_INTERLACEMETHOD_VDPAU_TEMPORAL=12,
@@ -157,12 +149,6 @@ enum EINTERLACEMETHOD
   VS_INTERLACEMETHOD_VDPAU_TEMPORAL_SPATIAL=14,
   VS_INTERLACEMETHOD_VDPAU_TEMPORAL_SPATIAL_HALF=15,
   VS_INTERLACEMETHOD_DEINTERLACE_HALF=16,
-  VS_INTERLACEMETHOD_DXVA_BOB = 17,
-  VS_INTERLACEMETHOD_DXVA_BEST = 18,
-  // VS_INTERLACEMETHOD_DXVA_ANY = 19, Legacy
-
-  VS_INTERLACEMETHOD_SW_BLEND = 20,
-  VS_INTERLACEMETHOD_AUTO_ION = 21,
 
   VS_INTERLACEMETHOD_VAAPI_BOB = 22,
   VS_INTERLACEMETHOD_VAAPI_MADI = 23,
@@ -174,7 +160,10 @@ enum EINTERLACEMETHOD
   VS_INTERLACEMETHOD_MMAL_BOB_HALF = 28,
 
   VS_INTERLACEMETHOD_IMX_FASTMOTION = 29,
-  VS_INTERLACEMETHOD_IMX_FASTMOTION_DOUBLE = 30,
+  VS_INTERLACEMETHOD_IMX_ADVMOTION = 30,
+  VS_INTERLACEMETHOD_IMX_ADVMOTION_HALF = 31,
+
+  VS_INTERLACEMETHOD_DXVA_AUTO = 32,
 
   VS_INTERLACEMETHOD_MAX // do not use and keep as last enum value.
 };
@@ -229,7 +218,9 @@ enum ViewMode {
   ViewModeStretch16x9,
   ViewModeOriginal,
   ViewModeCustom,
-  ViewModeStretch16x9Nonlin
+  ViewModeStretch16x9Nonlin,
+  ViewModeZoom120Width,
+  ViewModeZoom110Width
 };
 
 class IPlayer
@@ -245,9 +236,9 @@ public:
   virtual bool IsPlaying() const { return false;}
   virtual bool CanPause() { return true; };
   virtual void Pause() = 0;
-  virtual bool IsPaused() const = 0;
   virtual bool HasVideo() const = 0;
   virtual bool HasAudio() const = 0;
+  virtual bool HasGame() const { return false; }
   virtual bool HasRDS() const { return false; }
   virtual bool IsPassthrough() const { return false;}
   virtual bool CanSeek() {return true;}
@@ -258,11 +249,7 @@ public:
   virtual float GetCachePercentage(){ return 0;}
   virtual void SetMute(bool bOnOff){}
   virtual void SetVolume(float volume){}
-  virtual bool ControlsVolume(){ return false;}
   virtual void SetDynamicRangeCompression(long drc){}
-  virtual void GetAudioInfo(std::string& strAudioInfo) = 0;
-  virtual void GetVideoInfo(std::string& strVideoInfo) = 0;
-  virtual void GetGeneralInfo(std::string& strGeneralInfo) = 0;
   virtual bool CanRecord() { return false;};
   virtual bool IsRecording() { return false;};
   virtual bool Record(bool bOnOff) { return false;};
@@ -290,6 +277,11 @@ public:
   virtual void SetAudioStream(int iStream){};
   virtual void GetAudioStreamInfo(int index, SPlayerAudioStreamInfo &info){};
 
+  virtual int GetVideoStream() const { return -1; }
+  virtual int GetVideoStreamCount() const { return 0; }
+  virtual void GetVideoStreamInfo(int streamId, SPlayerVideoStreamInfo &info) {}
+  virtual void SetVideoStream(int iStream) {}
+
   virtual TextCacheStruct_t* GetTeletextCache() { return NULL; };
   virtual void LoadPage(int p, int sp, unsigned char* buffer) {};
 
@@ -302,7 +294,6 @@ public:
   virtual int  SeekChapter(int iChapter)                       { return -1; }
 //  virtual bool GetChapterInfo(int chapter, SChapterInfo &info) { return false; }
 
-  virtual float GetActualFPS() { return 0.0f; };
   virtual void SeekTime(int64_t iTime = 0){};
   /*
    \brief seek relative to current time, returns false if not implemented by player
@@ -323,10 +314,6 @@ public:
    */
   virtual void SetTime(int64_t time) { }
   /*!
-   \brief time of frame on screen in milliseconds
-   */
-  virtual int64_t GetDisplayTime() { return GetTime(); }
-  /*!
    \brief total time in milliseconds
    */
   virtual int64_t GetTotalTime() { return 0; }
@@ -336,10 +323,12 @@ public:
    its not available in the underlaying decoder (airtunes for example)
    */
   virtual void SetTotalTime(int64_t time) { }
-  virtual void GetVideoStreamInfo(SPlayerVideoStreamInfo &info){};
   virtual int GetSourceBitrate(){ return 0;}
   virtual bool GetStreamDetails(CStreamDetails &details){ return false;}
-  virtual void ToFFRW(int iSpeed = 0){};
+  virtual void SetSpeed(float speed) = 0;
+  virtual float GetSpeed() = 0;
+  virtual bool SupportsTempo() { return false; }
+
   // Skip to next track/item inside the current media (if supported).
   virtual bool SkipNext(){return false;}
 
@@ -349,7 +338,7 @@ public:
   virtual int GetCacheLevel() const {return -1;};
 
   virtual bool IsInMenu() const {return false;};
-  virtual bool HasMenu() { return false; };
+  virtual bool HasMenu() const { return false; };
 
   virtual void DoAudioWork(){};
   virtual bool OnAction(const CAction &action) { return false; };
@@ -362,28 +351,6 @@ public:
 
   virtual bool SwitchChannel(const PVR::CPVRChannelPtr &channel) { return false; }
 
-  // Note: the following "OMX" methods are deprecated and will be removed in the future
-  // They should be handled by the video renderer, not the player
-  /*!
-   \brief If the player uses bypass mode, define its rendering capabilities
-   */
-  virtual void OMXGetRenderFeatures(std::vector<int> &renderFeatures) {};
-  /*!
-   \brief If the player uses bypass mode, define its deinterlace algorithms
-   */
-  virtual void OMXGetDeinterlaceMethods(std::vector<int> &deinterlaceMethods) {};
-  /*!
-   \brief If the player uses bypass mode, define how deinterlace is set
-   */
-  virtual void OMXGetDeinterlaceModes(std::vector<int> &deinterlaceModes) {};
-  /*!
-   \brief If the player uses bypass mode, define its scaling capabilities
-   */
-  virtual void OMXGetScalingMethods(std::vector<int> &scalingMethods) {};
-  /*!
-   \brief define the audio capabilities of the player (default=all)
-   */
-
   virtual void GetAudioCapabilities(std::vector<int> &audioCaps) { audioCaps.assign(1,IPC_AUD_ALL); };
   /*!
    \brief define the subtitle capabilities of the player
@@ -395,21 +362,13 @@ public:
    */
   virtual void FrameMove() {};
 
-  virtual void FrameWait(int ms) {};
-
-  virtual bool HasFrame() { return false; };
-
   virtual void Render(bool clear, uint32_t alpha = 255, bool gui = true) {};
-
-  virtual void AfterRender() {};
 
   virtual void FlushRenderer() {};
 
   virtual void SetRenderViewMode(int mode) {};
 
   virtual float GetRenderAspectRatio() { return 1.0; };
-
-  virtual RESOLUTION GetRenderResolution() { return RES_INVALID; };
 
   virtual void TriggerUpdateResolution() {};
 
@@ -419,16 +378,18 @@ public:
 
   virtual bool IsRenderingVideoLayer() { return false; };
 
-  virtual bool Supports(EDEINTERLACEMODE mode) { return false; };
   virtual bool Supports(EINTERLACEMETHOD method) { return false; };
+  virtual EINTERLACEMETHOD GetDeinterlacingMethodDefault() { return EINTERLACEMETHOD::VS_INTERLACEMETHOD_NONE; }
   virtual bool Supports(ESCALINGMETHOD method) { return false; };
   virtual bool Supports(ERENDERFEATURE feature) { return false; };
 
-  virtual CRenderCapture *RenderCaptureAlloc() { return NULL; };
-  virtual void RenderCapture(CRenderCapture* capture, unsigned int width, unsigned int height, int flags) {};
-  virtual void RenderCaptureRelease(CRenderCapture* capture) {};
+  virtual unsigned int RenderCaptureAlloc() { return 0; };
+  virtual void RenderCaptureRelease(unsigned int captureId) {};
+  virtual void RenderCapture(unsigned int captureId, unsigned int width, unsigned int height, int flags) {};
+  virtual bool RenderCaptureGetPixels(unsigned int captureId, unsigned int millis, uint8_t *buffer, unsigned int size) { return false; };
 
-  virtual std::string GetRenderVSyncState() { return ""; };
+  std::string m_name;
+  std::string m_type;
 
 protected:
   IPlayerCallback& m_callback;

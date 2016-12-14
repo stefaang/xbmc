@@ -48,13 +48,8 @@
 
 #define HAS_JSONRPC
 
-#ifdef USE_ASAP_CODEC
-#define HAS_ASAP_CODEC
-#endif
-
 #define HAS_FILESYSTEM
 #define HAS_FILESYSTEM_CDDA
-#define HAS_FILESYSTEM_SAP
 
 #ifdef HAVE_LIBSMBCLIENT
   #define HAS_FILESYSTEM_SMB
@@ -86,20 +81,12 @@
   #define HAS_MDNS_EMBEDDED
 #endif
 
-#if defined(HAVE_LIBGIF)
-  #define HAS_GIFLIB
-#endif
-
 /**********************
  * Non-free Components
  **********************/
 
-#if defined(TARGET_WINDOWS)
+#if defined(HAVE_XBMC_NONFREE)
   #define HAS_FILESYSTEM_RAR
-#else
-  #if defined(HAVE_XBMC_NONFREE)
-    #define HAS_FILESYSTEM_RAR
-  #endif
 #endif
 
 /*****************
@@ -107,30 +94,13 @@
  *****************/
 
 #if defined(TARGET_WINDOWS)
-#define HAS_SDL_JOYSTICK
-#define HAS_DVD_DRIVE
 #define HAS_WIN32_NETWORK
 #define HAS_IRSERVERSUITE
-#define HAS_AUDIO
 #define HAS_WEB_SERVER
 #define HAS_WEB_INTERFACE
-#define HAVE_LIBSSH
-#define HAS_LIBRTMP
-#define HAVE_LIBBLURAY
-#define HAS_ASAP_CODEC
 #define HAS_FILESYSTEM_SMB
-#define HAS_FILESYSTEM_NFS
 #define HAS_ZEROCONF
 #define HAS_MDNS
-#define HAS_AIRPLAY
-#define HAS_AIRTUNES
-#define HAVE_LIBSHAIRPLAY
-#define HAVE_LIBCEC
-#define HAVE_LIBMP3LAME
-#define HAVE_LIBVORBISENC
-#define HAS_MYSQL
-#define HAS_UPNP
-#define HAS_GIFLIB
 
 #define DECLARE_UNUSED(a,b) a b;
 #endif
@@ -268,12 +238,3 @@
 #define GET_R(color)            ((color >> 16) & 0xFF)
 #define GET_G(color)            ((color >>  8) & 0xFF)
 #define GET_B(color)            ((color >>  0) & 0xFF)
-
-/****************
- * default skin
- ****************/
-#if defined(HAS_TOUCH_SKIN) && defined(TARGET_DARWIN_IOS)
-#define DEFAULT_SKIN          "skin.re-touched"
-#else
-#define DEFAULT_SKIN          "skin.confluence"
-#endif

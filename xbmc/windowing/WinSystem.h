@@ -31,6 +31,7 @@ typedef enum _WindowSystemType
   WINDOW_SYSTEM_OSX,
   WINDOW_SYSTEM_IOS,
   WINDOW_SYSTEM_X11,
+  WINDOW_SYSTEM_MIR,
   WINDOW_SYSTEM_SDL,
   WINDOW_SYSTEM_EGL,
   WINDOW_SYSTEM_ANDROID
@@ -73,9 +74,10 @@ public:
   virtual bool HasCursor(){ return true; }
   //some plattforms have api for gesture inertial scrolling - default to false and use the InertialScrollingHandler
   virtual bool HasInertialGestures(){ return false; }
-
   //does the output expect limited color range (ie 16-235)
   virtual bool UseLimitedColor();
+  //the number of presentation buffers
+  virtual int NoOfBuffers();
 
   virtual bool Minimize() { return false; }
   virtual bool Restore() { return false; }
@@ -89,7 +91,6 @@ public:
   virtual void EnableSystemScreenSaver(bool bEnable) {};
   virtual bool IsSystemScreenSaverEnabled() {return false;}
   virtual void ResetOSScreensaver() {};
-  virtual bool EnableFrameLimiter() {return false;};
 
   // resolution interfaces
   unsigned int GetWidth() { return m_nWidth; }

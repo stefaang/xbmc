@@ -1,6 +1,6 @@
 /*
- *      Copyright (C) 2005-2013 Team XBMC
- *      http://xbmc.org
+ *      Copyright (C) 2005-2015 Team Kodi
+ *      http://kodi.tv
  *
  *  This Program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License
- *  along with XBMC; see the file COPYING.  If not, see
+ *  along with Kodi; see the file COPYING.  If not, see
  *  <http://www.gnu.org/licenses/>.
  *
  */
@@ -26,6 +26,7 @@
 #include "WinSystemOSX.h"
 #include "WinEventsOSX.h"
 #include "Application.h"
+#include "ServiceBroker.h"
 #include "messaging/ApplicationMessenger.h"
 #include "CompileInfo.h"
 #include "guilib/DispResource.h"
@@ -37,10 +38,11 @@
 #include "threads/SingleLock.h"
 #include "utils/log.h"
 #include "utils/StringUtils.h"
-#include "osx/XBMCHelper.h"
+#include "platform/darwin/osx/XBMCHelper.h"
 #include "utils/SystemInfo.h"
-#include "osx/CocoaInterface.h"
-#include "osx/DarwinUtils.h"
+#include "platform/darwin/osx/CocoaInterface.h"
+#include "platform/darwin/DictionaryUtils.h"
+#include "platform/darwin/DarwinUtils.h"
 #undef BOOL
 
 #import <SDL/SDL_video.h>
@@ -50,7 +52,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <IOKit/pwr_mgt/IOPMLib.h>
 #import <IOKit/graphics/IOGraphicsLib.h>
-#import "osx/OSXTextInputResponder.h"
+#import "platform/darwin/osx/OSXTextInputResponder.h"
 
 // turn off deprecated warning spew.
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -200,63 +202,6 @@ CRect CGRectToCRect(CGRect cgrect)
     cgrect.origin.y + cgrect.size.height);
   return crect;
 }
-
-//------------------------------------------------------------------------------------------
-Boolean GetDictionaryBoolean(CFDictionaryRef theDict, const void* key)
-{
-        // get a boolean from the dictionary
-        Boolean value = false;
-        CFBooleanRef boolRef;
-        boolRef = (CFBooleanRef)CFDictionaryGetValue(theDict, key);
-        if (boolRef != NULL)
-                value = CFBooleanGetValue(boolRef);
-        return value;
-}
-//------------------------------------------------------------------------------------------
-long GetDictionaryLong(CFDictionaryRef theDict, const void* key)
-{
-        // get a long from the dictionary
-        long value = 0;
-        CFNumberRef numRef;
-        numRef = (CFNumberRef)CFDictionaryGetValue(theDict, key);
-        if (numRef != NULL)
-                CFNumberGetValue(numRef, kCFNumberLongType, &value);
-        return value;
-}
-//------------------------------------------------------------------------------------------
-int GetDictionaryInt(CFDictionaryRef theDict, const void* key)
-{
-        // get a long from the dictionary
-        int value = 0;
-        CFNumberRef numRef;
-        numRef = (CFNumberRef)CFDictionaryGetValue(theDict, key);
-        if (numRef != NULL)
-                CFNumberGetValue(numRef, kCFNumberIntType, &value);
-        return value;
-}
-//------------------------------------------------------------------------------------------
-float GetDictionaryFloat(CFDictionaryRef theDict, const void* key)
-{
-        // get a long from the dictionary
-        int value = 0;
-        CFNumberRef numRef;
-        numRef = (CFNumberRef)CFDictionaryGetValue(theDict, key);
-        if (numRef != NULL)
-                CFNumberGetValue(numRef, kCFNumberFloatType, &value);
-        return value;
-}
-//------------------------------------------------------------------------------------------
-double GetDictionaryDouble(CFDictionaryRef theDict, const void* key)
-{
-        // get a long from the dictionary
-        double value = 0.0;
-        CFNumberRef numRef;
-        numRef = (CFNumberRef)CFDictionaryGetValue(theDict, key);
-        if (numRef != NULL)
-                CFNumberGetValue(numRef, kCFNumberDoubleType, &value);
-        return value;
-}
-
 //---------------------------------------------------------------------------------
 void SetMenuBarVisible(bool visible)
 {
@@ -742,7 +687,7 @@ bool CWinSystemOSX::CreateNewWindow(const std::string& name, bool fullScreen, RE
   // set the window title
   NSMutableString *string;
   string = [NSMutableString stringWithUTF8String:CCompileInfo::GetAppName()];
-  [string appendString:@" Entertainment Center" ];
+  [string appendString:@" Media Center" ];
   [ [ [new_context view] window] setTitle:string ];
 
   m_glContext = new_context;
@@ -902,7 +847,7 @@ bool CWinSystemOSX::SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool bl
     last_window_origin = [[last_view window] frame].origin;
     last_window_level = [[last_view window] level];
 
-    if (CSettings::GetInstance().GetBool(CSettings::SETTING_VIDEOSCREEN_FAKEFULLSCREEN))
+    if (CServiceBroker::GetSettings().GetBool(CSettings::SETTING_VIDEOSCREEN_FAKEFULLSCREEN))
     {
       // This is Cocca Windowed FullScreen Mode
       // Get the screen rect of our current display
@@ -1010,7 +955,7 @@ bool CWinSystemOSX::SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool bl
     if (GetDisplayID(res.iScreen) == kCGDirectMainDisplay || CDarwinUtils::IsMavericks() )
       SetMenuBarVisible(true);
 
-    if (CSettings::GetInstance().GetBool(CSettings::SETTING_VIDEOSCREEN_FAKEFULLSCREEN))
+    if (CServiceBroker::GetSettings().GetBool(CSettings::SETTING_VIDEOSCREEN_FAKEFULLSCREEN))
     {
       // restore the windowed window level
       [[last_view window] setLevel:last_window_level];
@@ -1067,6 +1012,7 @@ bool CWinSystemOSX::SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool bl
   ShowHideNSWindow([last_view window], needtoshowme);
   // need to make sure SDL tracks any window size changes
   ResizeWindowInternal(m_nWidth, m_nHeight, -1, -1, last_view);
+  [[last_view window] setFrameOrigin:last_window_origin];
   HandlePossibleRefreshrateChange();
 
   return true;
@@ -1387,7 +1333,7 @@ bool CWinSystemOSX::FlushBuffer(void)
 
 bool CWinSystemOSX::IsObscured(void)
 {
-  if (m_bFullScreen && !CSettings::GetInstance().GetBool(CSettings::SETTING_VIDEOSCREEN_FAKEFULLSCREEN))
+  if (m_bFullScreen && !CServiceBroker::GetSettings().GetBool(CSettings::SETTING_VIDEOSCREEN_FAKEFULLSCREEN))
     return false;// in true fullscreen mode - we can't be obscured by anyone...
 
   // check once a second if we are obscured.
@@ -1529,7 +1475,7 @@ bool CWinSystemOSX::IsObscured(void)
       obscureLogged = false;
     std::vector<CRect> rects = ourBounds.SubtractRects(partialOverlaps);
     // they got us covered
-    if (rects.size() == 0)
+    if (rects.empty())
       m_obscured = true;
   }
 
@@ -1663,11 +1609,6 @@ void CWinSystemOSX::ResetOSScreensaver()
 {
   // allow os screensaver only if we are fullscreen
   EnableSystemScreenSaver(!m_bFullScreen);
-}
-
-bool CWinSystemOSX::EnableFrameLimiter()
-{
-  return IsObscured();
 }
 
 void CWinSystemOSX::EnableTextInput(bool bEnable)

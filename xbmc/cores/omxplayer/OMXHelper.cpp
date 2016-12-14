@@ -23,11 +23,13 @@
 #ifdef HAS_OMXPLAYER
 
 #include "VideoPlayer.h"
+#include "ServiceBroker.h"
 #include "settings/Settings.h"
 #include "settings/MediaSettings.h"
 #include "DVDInputStreams/DVDInputStream.h"
 #include "cores/omxplayer/OMXPlayerAudio.h"
 #include "cores/omxplayer/OMXPlayerVideo.h"
+#include "threads/SystemClock.h"
 
 #define PREDICATE_RETURN(lh, rh) \
   do { \
@@ -45,22 +47,22 @@ static bool PredicateVideoPriority(const SelectionStream& lh, const SelectionStr
 bool OMXPlayerUnsuitable(bool m_HasVideo, bool m_HasAudio, CDVDDemux* m_pDemuxer, CDVDInputStream* m_pInputStream, CSelectionStreams &m_SelectionStreams)
 {
   // if no OMXPlayer acceleration then it is not suitable
-  if (!CSettings::GetInstance().GetBool(CSettings::SETTING_VIDEOPLAYER_USEOMXPLAYER))
+  if (!CServiceBroker::GetSettings().GetBool(CSettings::SETTING_VIDEOPLAYER_USEOMXPLAYER))
     return true;
   // if no MMAL acceleration stick with omxplayer regardless
-  if (!CSettings::GetInstance().GetBool(CSettings::SETTING_VIDEOPLAYER_USEMMAL))
+  if (!CServiceBroker::GetSettings().GetBool(CSettings::SETTING_VIDEOPLAYER_USEMMAL))
     return false;
 
   // omxplayer only handles Pi sink
-  if (CSettings::GetInstance().GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE) != "PI:Analogue" &&
-      CSettings::GetInstance().GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE) != "PI:HDMI" &&
-      CSettings::GetInstance().GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE) != "PI:Both")
+  if (CServiceBroker::GetSettings().GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE) != "PI:Analogue" &&
+      CServiceBroker::GetSettings().GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE) != "PI:HDMI" &&
+      CServiceBroker::GetSettings().GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE) != "PI:Both")
   {
     CLog::Log(LOGNOTICE, "%s OMXPlayer unsuitable due to audio sink", __func__);
     return true;
   }
   // omxplayer doesn't handle ac3 transcode
-  if (CSettings::GetInstance().GetBool(CSettings::SETTING_AUDIOOUTPUT_AC3TRANSCODE))
+  if (CServiceBroker::GetSettings().GetBool(CSettings::SETTING_AUDIOOUTPUT_AC3TRANSCODE))
   {
     CLog::Log(LOGNOTICE, "%s OMXPlayer unsuitable due to ac3transcode", __func__);
     return true;
@@ -74,7 +76,7 @@ bool OMXPlayerUnsuitable(bool m_HasVideo, bool m_HasAudio, CDVDDemux* m_pDemuxer
     for(SelectionStreams::iterator it = streams.begin(); it != streams.end(); ++it)
     {
       int iStream = it->id;
-      CDemuxStream *stream = m_pDemuxer->GetStream(iStream);
+      CDemuxStream *stream = m_pDemuxer->GetStream(it->demuxerId, iStream);
       if(!stream || stream->disabled || stream->flags & AV_DISPOSITION_ATTACHED_PIC)
         continue;
       CDVDStreamInfo hint(*stream, true);
@@ -112,14 +114,14 @@ bool OMXDoProcessing(struct SOmxPlayerState &m_OmxPlayerState, int m_playSpeed, 
                      CCurrentStream m_CurrentAudio, CCurrentStream m_CurrentVideo, bool m_HasVideo, bool m_HasAudio, CRenderManager& m_renderManager)
 {
   bool reopen_stream = false;
-  double now = CDVDClock::GetAbsoluteClock();
-  if (m_OmxPlayerState.last_check_time == 0.0 || m_OmxPlayerState.last_check_time + DVD_MSEC_TO_TIME(20) <= now)
+  unsigned int now = XbmcThreads::SystemClockMillis();
+  if (m_OmxPlayerState.last_check_time == 0.0 || m_OmxPlayerState.last_check_time + 20 <= now)
   {
     m_OmxPlayerState.last_check_time = now;
     m_OmxPlayerState.stamp = m_OmxPlayerState.av_clock.OMXMediaTime();
     const bool m_Pause = m_playSpeed == DVD_PLAYSPEED_PAUSE;
     const bool not_accepts_data = (!m_VideoPlayerAudio->AcceptsData() && m_HasAudio) ||
-        (!m_VideoPlayerVideo->AcceptsData() && m_HasVideo >= 0);
+        (!m_VideoPlayerVideo->AcceptsData() && m_HasVideo);
     /* when the video/audio fifos are low, we pause clock, when high we resume */
     double audio_pts = floor(m_VideoPlayerAudio->GetCurrentPts());
     double video_pts = floor(m_VideoPlayerVideo->GetCurrentPts());
@@ -130,19 +132,15 @@ bool OMXDoProcessing(struct SOmxPlayerState &m_OmxPlayerState, int m_playSpeed, 
     bool audio_fifo_low = false, video_fifo_low = false, audio_fifo_high = false, video_fifo_high = false;
 
     if (m_OmxPlayerState.interlace_method == VS_INTERLACEMETHOD_MAX)
-      m_OmxPlayerState.interlace_method = m_renderManager.AutoInterlaceMethod(CMediaSettings::GetInstance().GetCurrentVideoSettings().m_InterlaceMethod);
+      m_OmxPlayerState.interlace_method = CMediaSettings::GetInstance().GetCurrentVideoSettings().m_InterlaceMethod;
 
     // if deinterlace setting has changed, we should close and open video
-    if (m_OmxPlayerState.current_deinterlace != CMediaSettings::GetInstance().GetCurrentVideoSettings().m_DeinterlaceMode ||
-       (m_OmxPlayerState.current_deinterlace != VS_DEINTERLACEMODE_OFF &&
-        m_OmxPlayerState.interlace_method != m_renderManager.AutoInterlaceMethod(CMediaSettings::GetInstance().GetCurrentVideoSettings().m_InterlaceMethod)))
+    if (m_OmxPlayerState.interlace_method != CMediaSettings::GetInstance().GetCurrentVideoSettings().m_InterlaceMethod)
     {
-      CLog::Log(LOGNOTICE, "%s - Reopen stream due to interlace change (%d,%d,%d,%d)", __FUNCTION__,
-        m_OmxPlayerState.current_deinterlace, CMediaSettings::GetInstance().GetCurrentVideoSettings().m_DeinterlaceMode,
-        m_OmxPlayerState.interlace_method, m_renderManager.AutoInterlaceMethod(CMediaSettings::GetInstance().GetCurrentVideoSettings().m_InterlaceMethod));
+      CLog::Log(LOGNOTICE, "%s - Reopen stream due to interlace change (%d,%d)", __FUNCTION__,
+        m_OmxPlayerState.interlace_method, CMediaSettings::GetInstance().GetCurrentVideoSettings().m_InterlaceMethod);
 
-      m_OmxPlayerState.current_deinterlace = CMediaSettings::GetInstance().GetCurrentVideoSettings().m_DeinterlaceMode;
-      m_OmxPlayerState.interlace_method    = m_renderManager.AutoInterlaceMethod(CMediaSettings::GetInstance().GetCurrentVideoSettings().m_InterlaceMethod);
+      m_OmxPlayerState.interlace_method    = CMediaSettings::GetInstance().GetCurrentVideoSettings().m_InterlaceMethod;
       reopen_stream = true;
     }
 
